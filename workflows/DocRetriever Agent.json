@@ -1,0 +1,970 @@
+{
+  "name": "DocRetriever Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "query": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('Query', ``, 'string') }}",
+        "options": {}
+      },
+      "type": "@tavily/n8n-nodes-tavily.tavilyTool",
+      "typeVersion": 1,
+      "position": [
+        288,
+        224
+      ],
+      "id": "5f363a1d-7908-40c6-a863-2183b4220eff",
+      "name": "Search in Tavily",
+      "credentials": {
+        "tavilyApi": {
+          "id": "x9KiqLC823cFnMTn",
+          "name": "Tavily account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "model": "deepseek/deepseek-v4-flash",
+        "options": {
+          "maxTokens": 10000,
+          "timeout": 720000
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        144,
+        224
+      ],
+      "id": "e8f33ea9-c7a0-4ade-a727-c2a6b596bc67",
+      "name": "OpenRouter Chat Model",
+      "credentials": {
+        "openRouterApi": {
+          "id": "9V9hxCMPE7E5XGe9",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "descriptionType": "manual",
+        "toolDescription": "=# todo_write\n\nCreate and manage a structured task list for the current session. This tool is an **upsert** — the same call both adds new tasks and updates existing ones. Use it to plan multi-step work, track progress in real time, and give the user visibility into what's done and what's next.\n\n## How the upsert works\n\n- **New task** → a row is appended.\n- **Existing task** (matched by content within the current session) → that row's status is updated in place.\n\nThis means you use the same tool for the entire lifecycle: creating the plan, flipping tasks to `in_progress`, and marking them `completed`. Don't think of \"create\" and \"update\" as separate operations — they're the same call with different status values.\n\n## Planning: batch all tasks up front\n\n**When you start a multi-step task, call `todo_write` in parallel — one call per task — to create the full plan in a single turn.** The user should see the complete plan before you begin executing, not watch it materialize task-by-task.\n\nInitial planning calls all use `status: pending`. Once the plan is laid out, subsequent calls update status one task at a time as work progresses, or add genuinely new tasks discovered along the way.\n\n## When to use\n\nUse proactively when any of these apply:\n\n- **Complex multi-step tasks** — 3 or more distinct steps or actions.\n- **Non-trivial work** — anything requiring careful planning or multiple operations.\n- **User explicitly requests a todo list.**\n- **User provides multiple tasks** — numbered or comma-separated lists.\n- **After receiving new instructions** — capture requirements as todos immediately.\n- **When starting a task** — update it to `in_progress` *before* beginning work.\n- **After completing a task** — update to `completed` and add any follow-ups discovered.\n\n## When NOT to use\n\nSkip the tool when:\n\n- There's a single, straightforward task.\n- The work is trivial and tracking adds no value.\n- The task takes fewer than 3 trivial steps.\n- The request is purely conversational or informational.\n\nIf there's only one trivial task, just do it.\n\n## Task states\n\n| State | Meaning |\n|---|---|\n| `pending` | Not yet started |\n| `in_progress` | Currently working on — **limit to ONE at a time** |\n| `completed` | Fully finished, verified |\n\n## Required fields\n\nEvery task needs two forms of its description:\n\n- **`content`** — imperative form (e.g., \"Run tests\", \"Build the project\"). This is also the match key for upserts — keep it stable across calls so updates land on the right row.\n- **`activeForm`** — present continuous, shown during execution (e.g., \"Running tests\", \"Building the project\").\n\n## Lifecycle pattern\n\nA typical task flows through three calls:\n\n1. **Plan** — `todo_write` with `status: pending` (called in parallel with all other initial tasks).\n2. **Start** — `todo_write` with the same `content`, `status: in_progress`. This updates the existing row.\n3. **Finish** — `todo_write` with the same `content`, `status: completed`. Updates the row again.\n\nKeep `content` byte-identical across these three calls — that's how the upsert finds the right row.\n\n## Management rules\n\n- Update status in real time as you work.\n- Mark complete **immediately** after finishing — never batch completions.\n- Exactly **one** task `in_progress` at any time.\n- Finish the current task before starting the next.\n- If a task becomes irrelevant, update it rather than leaving stale `pending` rows around.\n\n## Completion criteria\n\nOnly set `completed` when the task is **fully** done. Keep it `in_progress` if:\n\n- Tests are failing.\n- Implementation is partial.\n- Errors are unresolved.\n- Required files or dependencies are missing.\n\nWhen blocked, leave the current task `in_progress` and add a new task (fresh `todo_write` call with new `content`) describing what needs to be resolved.\n\n## Task breakdown\n\n- Make items specific and actionable.\n- Break complex work into smaller, manageable steps.\n- Use clear, descriptive names — and remember `content` doubles as the upsert key, so don't reword it mid-task.\n- Always include both `content` and `activeForm`.\n\n## Examples — when to use\n\n**User:** \"Add a dark mode toggle to settings. Run the tests and build when you're done.\"\n→ Fire parallel `todo_write` calls (all `pending`): build toggle component, add state management, implement dark theme styles, update existing components, run tests and build. Then update the first to `in_progress` and begin.\n\n**User:** \"Rename `getCwd` to `getCurrentWorkingDirectory` across my project.\"\n→ Search first to find all instances. Once you know the scope (e.g., 15 instances across 8 files), parallel `todo_write` calls — one per file, all `pending` — then update through them sequentially.\n\n**User:** \"Implement user registration, product catalog, shopping cart, and checkout for my e-commerce site.\"\n→ Parallel `todo_write` calls for each feature, broken down by the project's architecture. Then flip the first to `in_progress`.\n\n**User:** \"Optimize my React app — it's rendering slowly.\"\n→ Analyze first. Then parallel `todo_write` calls for each identified fix (memoization, virtualization, image loading, state-loop fix, code splitting). Start with the highest-impact item.\n\n## Examples — when NOT to use\n\n**User:** \"How do I print 'Hello World' in Python?\" → Just answer.\n**User:** \"What does `git status` do?\" → Just explain.\n**User:** \"Add a comment to the `calculateTotal` function.\" → Single edit, just do it.\n**User:** \"Run `npm install` and tell me what happens.\" → Single command, just run it.\n\nWhen in doubt, use the tool. Proactive task management demonstrates thoroughness and ensures nothing is missed.",
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1YLNXET6JjGXW6wE0oCW4Lm7miYyjn6wCYxG7gEyoAf0",
+          "mode": "list",
+          "cachedResultName": "n8n-cowork-xia",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1YLNXET6JjGXW6wE0oCW4Lm7miYyjn6wCYxG7gEyoAf0/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "to-dos",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1YLNXET6JjGXW6wE0oCW4Lm7miYyjn6wCYxG7gEyoAf0/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Session ID": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('Session_ID', ``, 'string') }}",
+            "Content": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('Content', ``, 'string') }}",
+            "Active Form": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('Active_Form', ``, 'string') }}",
+            "Details": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('Details', ``, 'string') }}",
+            "Status": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('Status', ``, 'string') }}",
+            "row_number": 0,
+            "Row ID": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('Row_ID', ``, 'string') }}"
+          },
+          "matchingColumns": [
+            "Row ID"
+          ],
+          "schema": [
+            {
+              "id": "Row ID",
+              "displayName": "Row ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Session ID",
+              "displayName": "Session ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Content",
+              "displayName": "Content",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Active Form",
+              "displayName": "Active Form",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Details",
+              "displayName": "Details",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheetsTool",
+      "typeVersion": 4.7,
+      "position": [
+        752,
+        224
+      ],
+      "id": "b26ae7c2-b9cd-4a0c-9ec9-81ee7c0c4ea9",
+      "name": "update todos",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "VSw2jShUhJJiajak",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "scrape",
+        "scrapeOptions": {
+          "options": {
+            "headers": {}
+          }
+        },
+        "requestOptions": {}
+      },
+      "type": "@mendable/n8n-nodes-firecrawl.firecrawlTool",
+      "typeVersion": 1,
+      "position": [
+        448,
+        224
+      ],
+      "id": "61656040-a5bf-4e10-8147-6a6d9ebe37a7",
+      "name": "/scrape in Firecrawl1",
+      "credentials": {
+        "firecrawlApi": {
+          "id": "GEFeJBW9v749sfHg",
+          "name": "Firecrawl API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentURL": "https://docs.google.com/document/d/12wTHbl__LhMQZfSi0ttil4b2oKFJuvQttBTnbDLy8-4/edit?usp=sharing",
+        "actionsUi": {
+          "actionFields": [
+            {
+              "action": "insert",
+              "text": "={{ /*n8n-auto-generated-fromAI-override*/ $fromAI('actionFields0_Text', ``, 'string') }}"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.googleDocsTool",
+      "typeVersion": 2,
+      "position": [
+        608,
+        224
+      ],
+      "id": "2f7d2b77-28e0-4542-b45c-1e7b0927b8ef",
+      "name": "write report file",
+      "credentials": {
+        "googleDocsOAuth2Api": {
+          "id": "yLLi6Pn98d1KaMpY",
+          "name": "Google Docs OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "workflowInputs": {
+          "values": [
+            {
+              "name": "Domain"
+            },
+            {
+              "name": "Session ID"
+            },
+            {
+              "name": "Plan"
+            }
+          ]
+        }
+      },
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        144,
+        -112
+      ],
+      "id": "a0a6ea43-e8f2-4bf2-90a6-e4e9a952bb37",
+      "name": "When Executed by Another Workflow"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.Domain }}\n{{ $json['Session ID'] }}\n{{ $json.Plan }}",
+        "options": {
+          "systemMessage": "# Module 3 Research Subagent — System Prompt\n\n## Role\nYou are a senior researcher at a strategy consulting firm. Your job is to produce a thorough, well-structured report based on the domain, research plan, and any context passed to you by the main agent. You think like a consultant: systematic, skeptical of hype, and focused on what is true and actionable. You do not editorialize or pad your output with filler. Every sentence earns its place.\n\nAlways follow the plan you receive. Do not add research areas that are not in the plan. Do not drop research areas that are in the plan.\n\n---\n\n## Tools Available\n\n- **Supabase Vector Store (RAG)** — query the internal document database first, before any web research. Use this to retrieve relevant passages and documents already stored for this project. Always run a vector search for each research area before deciding whether web search is needed. When you cite content retrieved from here, label it by document title or filename (e.g., `[Internal: Porter Five Forces Overview.pdf]`), not by URL.\n- **web_search** — use only after querying the vector store, and only when the database content is absent or insufficient to fully cover a research area. Prefer queries that return primary sources. Work from search snippets only.\n- **firecrawl** — use to scrape the full content of a specific URL when a search snippet is insufficient. Only use it when you have a high-confidence URL worth reading in full. Do not scrape speculatively.\n- **Google Sheets (to-dos)** — read and update the shared task list to signal your progress back to the main agent.\n- **Google Docs** — write the completed report to the shared Google Doc. The target document ID is `12wTHbl__LhMQZfSi0ttil4b2oKFJuvQttBTnbDLy8-4`. Always replace the full document content — do not append.\n- **Supabase (row insert)** — save the completed report as a new row. Pass exactly three fields: `session_id` (the Session ID passed by the main agent), `title` (the text after \"Report:\" in the report header), and `content` (the complete markdown report, verbatim). Do not pass `id` — Supabase auto-generates it. Do not pass `created_at` or any other field.\n\n---\n\n## Task List Communication\n\nThe main agent has already created all task rows. You only read and update — never create rows.\n\nOn every call, do this in order:\n\n1. **Read the sheet** — find the row where Session ID matches the one passed by the main agent AND Active Form is `Task 3`. This is your row.\n2. **Update Task 3 to `in progress`** — do this before you begin research.\n3. **Execute research** per the instructions below.\n4. **Write the report to Google Docs** — replace the full content of document `12wTHbl__LhMQZfSi0ttil4b2oKFJuvQttBTnbDLy8-4` with the complete markdown report. Do not append — overwrite everything.\n5. **Save the report to Supabase** — insert a new row with `session_id`, `title`, and `content`. Do not pass `id` or `created_at`.\n6. **Update Task 3 to `complete`** — write a short summary in Details (e.g. `Report complete · 12 sources (4 internal, 8 web) · saved to Docs + Supabase`). If either write fails, leave the status as `in progress` and write a short error note in Details.\n\nNever skip these steps. The main agent will re-read the sheet after you return and will not proceed unless Task 3 is `complete`.\n\n### Row rules\n- Never create or append rows. Only update existing rows.\n- To update, call **update todos**. Match using the **Row ID** column, constructed as `{SessionID}_{ActiveForm}` — for example: `177a2ec6_Task2`\n- The Session ID will be passed to you by the main agent. Use it to build the correct Row ID.\n- Only update the Status column. Do not touch any other column.\n- Valid statuses: `pending`, `in progress`, `complete` — nothing else.\n\n---\n\n## Rules & Constraints\n\n1. **Query the database before the web.** For every research area, run a vector search against the Supabase database first. Use whatever it returns before turning to web search. Only run a web search for that area if the database result is absent or clearly insufficient to cover the focus.\n2. **Label every source by its origin.** Database content must be cited by document title or filename in square brackets — e.g., `[Internal: Competitive Landscape 2024.pdf]`. Web content must be cited with the full URL and year in parentheses — e.g., `(https://techcrunch.com/2024/article, 2024)`. Never mix or omit these labels.\n3. **Ground every claim in a source.** Do not state facts you cannot support with a retrieved document or search result. If uncertain, say so explicitly (e.g., \"reportedly,\" \"as of [date],\" \"unconfirmed\").\n4. **Recency matters.** Prioritize information from the last 18 months. Flag anything older than 2 years as potentially stale.\n5. **Cover the full landscape, not just the obvious names.** Go beyond the top 3 players. Look for emerging challengers, niche specialists, and international players.\n6. **Be specific.** Replace vague statements like \"growing rapidly\" with numbers, names, or examples whenever available.\n7. **Do not hallucinate.** If neither the database nor a web search returns useful content for a section, write \"Insufficient data found\" rather than inventing content.\n8. **Stay focused.** Do not include background history or general industry education unless it directly explains the current landscape.\n9. **No marketing language.** Describe what products actually do, not how they are positioned.\n10. **Write in prose, not bullets.** Each research section must be written as flowing paragraphs. Do not use bullet points or numbered lists within sections. If you need to distinguish multiple items, introduce them in a sentence and then elaborate on each in its own paragraph.\n11. **One vector search and one web search per area, no exceptions.** Do not run follow-up queries of either type. Use firecrawl only when a specific URL warrants deeper reading.\n\n---\n\n## Chain of Thought\n\n### Step 1 — Read what you received\nRead the domain, plan, Session ID, and any additional context. Note every research area and its focus text. If the plan contains more than 3 research areas, cover only the first 3.\n\n### Step 2 — Query the internal database first (for all areas)\nBefore touching web search, run one vector store query per research area in sequence:\n\n1. Read the area name and focus text.\n2. Build a query tailored to that focus and run it against the Supabase vector store.\n3. Record what documents and passages were returned, including their titles or filenames. Note whether the result is sufficient, thin, or empty.\n4. If the result is sufficient to fully cover the area, mark web search as **not needed** for this area.\n5. If the result is thin or empty, mark web search as **needed** for this area.\n\nComplete this for all areas before moving to Step 3. Do not write anything yet.\n\n### Step 3 — Run web searches only where needed\nFor each area marked **web search needed** in Step 2:\n\n1. Build exactly 1 query tailored to that focus. Always include the domain in the query.\n2. Run the search. Store the results.\n3. If a snippet contains a high-value URL that warrants deeper reading, use firecrawl to scrape it — one scrape per area maximum.\n\nDo this for all relevant areas before moving to Step 4. Do not write anything yet.\n\n### Step 4 — Write the full report in one pass\nWith all database results and web search results in hand, write every section in order. Do not run any new searches. Apply these rules as you write:\n\n- Lead each section with what the internal database says, clearly labeling it as `[Internal: filename]`.\n- Follow with web-sourced content only where the database was insufficient, clearly labeled with full URLs.\n- If a section relied entirely on the database, do not add web content.\n- If neither source returned useful content, write \"Insufficient data found\" — do not invent content.\n\nIf the plan contained more than 3 research areas, add a note at the end: \"Plan contained additional areas; omitted to stay within time limits.\"\n\n### Step 5 — Save the report\nAfter the report is fully written, perform both saves before marking Task 3 complete:\n\n1. **Google Docs** — replace the full content of document `12wTHbl__LhMQZfSi0ttil4b2oKFJuvQttBTnbDLy8-4` with the complete report. Overwrite everything currently in the document.\n2. **Supabase (row insert)** — insert a new row with exactly three fields: `session_id` (from the main agent), `title` (the text after \"Report:\" in the report header, nothing else), and `content` (the full markdown report, verbatim). Do not pass `id` or `created_at`.\n\nIf either save fails, note the error in the Task 3 Details field and still attempt the other save before updating status.\n\n---\n\n## Output Format\n\nProduce a single structured markdown report. Sections must match exactly the research areas covered. Each section must be written in full paragraphs — no bullet points, no numbered lists, no fragment sentences. Minimum 2 paragraphs per section.\n\n### Report: [Domain]\n\nResearch date: [today's date]\nSources consulted: [X internal documents · Y web URLs]\n\n---\n\n#### Domain overview\n\n[2–3 sentences on what this space is, what core problem it addresses, and rough market scope.]\n\n---\n\n#### 1. [Research area name]\n\n[Prose paragraphs. Lead with internal database content, cited as \\[Internal: filename\\]. Follow with web content only if the database was insufficient, cited as (https://full-url, year).]\n\n#### 2. [Research area name]\n\n[Prose paragraphs following the same source-labeling rules.]\n\n[...continue for every area covered, in the same order as the plan]\n\n---\n\n#### Sources\n\n**Internal documents**\n\n[Document title or filename] — retrieved from internal Supabase database\n\n**Web sources**\n\n[Title or descriptive label] — [full URL] — [publication date or date accessed]\n\n---\n\nYour final output MUST be the complete markdown report as defined above, and nothing else. No preface, no JSON wrapper, no commentary. The main agent will pass your output straight through to the user.",
+          "maxIterations": 50
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3.1,
+      "position": [
+        368,
+        -112
+      ],
+      "id": "31c140e6-1745-4425-a3e8-5c963ff98a3e",
+      "name": "research agent1"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "4bc7b8ce-95b5-49ac-bcb9-10494d6da6fc",
+              "name": "markdown",
+              "value": "=# Personalization Meets Privacy\n# Class 15\n\n**Tom O’Toole**\n\nClinical Professor of Marketing\n\n# Northwestern Kellogg\n\nLoyalty Co.: The Business of Customer Loyalty MKTG-948\n\nCopyright © 2026 Anderson, O’Toole 1\n\n# Loyalty Management Framework\n\nToday's discussion emphasizes a course theme: loyalty programs are increasingly about the strategic value of data ownership. If you are Wayfair, Hyatt or McDonald's, you already sit close to the transaction. These firms invest in a spectrum of personalization capabilities so that you are not entirely dependent on someone else's lens into your customer.\n\n```mermaid\ngraph LR\n    subgraph \"Loyalty Program and Business Case\"\n        Foundation --> ValueCreation[Value Creation]\n        ValueCreation --> Design\n    end\n    Design --> StrategicIssues[\"Strategic, Enterprise Issues\"]\n    subgraph StrategicIssues[\"Strategic, Enterprise Issues\"]\n        direction TB\n        L1[Personalization] --- R1[Monetization]\n        L2[Accounting] --- R2[Partnerships]\n        L3[M&A] --- R3[Ecosystems]\n        C1[Org. Transformation]\n    end\n```\n\n> Personalization and privacy\n\nLike CPG, privacy regulations are creating walls between the end consumer and the firm. The question isn't \"Is data good or bad?\" The real question is: Who owns it? Who controls it? And what is the value derived for both firms and consumers?\n\nNorthwestern Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n81\n\n2\n\n# Our two readings for today address the strategy and infrastructure of personalization\n\n## THE STRATEGY QUESTION\n\n**Where in the lifecycle?**\n\nBefore purchase → during → after purchase\nDepth of individualization increases as the relationship deepens\n\n**How deep can you go?**\n\nSegmentation (broadest); Discrete interactions; Pre-set personas / journeys; Contextual anticipation (deepest)\n\n**Four strategic questions**\n\nWhat's the consumer need? What's the business objective?\nWhat's the tactic? Who needs to be involved?\n\n*Forrester, \"A Strategy Guide to Consumer Personalization\" (2022)*\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O'Toole 3\n\n# Our two readings for today address the strategy and infrastructure of personalization\n\nthe strategic value of data ownership. If you are Wayfair, Hyatt or McDonald's, you already sit close to the transaction.\n\n## THE STRATEGY QUESTION\n\n## THE INFRASTRUCTURE QUESTION\n\n**Where in the lifecycle?**\n\nBefore purchase → during → after purchase\nDepth of individualization increases as the relationship deepens\n\n**How deep can you go?**\n\nSegmentation (broadest); Discrete interactions; Pre-set personas / journeys; Contextual anticipation (deepest)\n\n**Four strategic questions**\n\nWhat's the consumer need? What's the business objective? What's the tactic? Who needs to be involved?\n\nForrester, \"A Strategy Guide to Consumer Personalization\" (2022)\n\n**The hard part isn't the algorithm**\n\n\"Personalization is the goal. The technology is merely the tool for reaching it.\"\n\n**Four requirements to deliver**\n\n1. Goal clarity — optimize for narrow and measurable\n\n2. Data instrumentation — capture every interaction at granular level, tag everything\n\n3. Modular tech architecture — loosely connected systems, APIs, not one monolith\n\n4. Experimental culture — test, learn, iterate\n\n**Key examples:** Starbucks (goal clarity), Aetna (data instrumentation at micro-level)\n\nHBR, \"What Smart Companies Know About Integrating AI\" (2024)\n\nNorthwestern Kellogg\n\nCopyright © 2026 Anderson, O'Toole 4\n\n# Our two readings for today address the strategy and infrastructure of personalization\n\n## THE STRATEGY QUESTION\n\n## THE INFRASTRUCTURE QUESTION\n\n**Where in the lifecycle?**\n\nBefore purchase → during → after purchase\nDepth of individualization increases as the relationship deepens\n\n**How deep can you go?**\n\nSegmentation (broadest); Discrete interactions; Pre-set personas / journeys; Contextual anticipation (deepest)\n\n**Four strategic questions**\n\nWhat's the consumer need? What's the business objective?\nWhat's the tactic? Who needs to be involved?\n\n**The hard part isn't the algorithm**\n\n*\"Personalization is the goal. The technology is merely the tool for reaching it.\"*\n\n**Four requirements to deliver**\n\n1. Goal clarity — optimize for narrow and measurable\n\n2. Data instrumentation — capture every interaction at granular level, tag everything\n\n3. Modular tech architecture — loosely connected systems, APIs, not one monolith\n\n4. Experimental culture — test, learn, iterate\n\n**Key examples:** Starbucks (goal clarity), Aetna (data instrumentation at micro-level)\n\n**Today's question:** What capabilities are required for personalization? What happens when you can't access the customer at all – due to structural constraints or privacy constraints?\n\nNorthwestern Kellogg\n\nCopyright © 2026 Anderson, O’Toole 5\n\n# Learning objectives\n\n* **Personalization capability**\n\n* Personalization in CPG\n\n* Impact of privacy regulations on loyalty programs\n\nNorthwestern Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n6\n\n# What did Stitch Fix personalize?\n\nWoman smiling\n\nBlack strappy sandals\n\nJeans and a grey jacket\n\nMan sitting on a chair\n\nPlaid shirt\n\nWoman holding a camera\n\nStitch Fix logo\n\nWoman holding a Stitch Fix box\n\nMan in a patterned shirt\n\nGrey t-shirt\n\nMan in a jacket and pink shirt\n\nWoman in a floral dress\n\nGrey shoes\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n7\n\n# How is the personalization problem different?\n\nBest Buy logo\n\nWilliams-Sonoma, Inc. brand portfolio including Williams Sonoma, Williams Sonoma Home, west elm, Pottery Barn, Pottery Barn teen, pottery barn kids, Mark & Graham, Rejuvenation, and GreenRow\n\nInterior of a Best Buy store showing television displays\n\nStainless steel cookware with lemons\n\nA decorated nursery room with a crib and armchair\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n8\n\n# A spectrum of personalization capabilities\n\n<table>\n  <thead>\n    <tr>\n      <th>Point Solutions</th>\n      <th>Predictive Systems</th>\n      <th>Incremental Systems</th>\n      <th>Enterprise Systems</th>\n    </tr>\n  </thead>\n  <tbody>\n    <tr>\n      <td>Scope: limited</td>\n      <td>Scope: limited</td>\n      <td>Scope: limited</td>\n      <td>Scope: broad</td>\n    </tr>\n    <tr>\n      <td>Experimentation: limited</td>\n      <td>Experimentation: limited</td>\n      <td>Experimentation: robust</td>\n      <td>Experimentation: robust</td>\n    </tr>\n    <tr>\n      <td>Automation: limited</td>\n      <td>Automation: robust</td>\n      <td>Automation: robust</td>\n      <td>Automation: robust</td>\n    </tr>\n  </tbody>\n</table>\n\n**Mass**\n**Personalization**\n(Segment-based)\n\n**Individual**\n**Personalization**\n(1:1)\n\n**Predictive**\n**Personalization**\n(Anticipatory)\n\n**Hyper-**\n**Personalization**\n(Real-time & Contextual)\n\nauto frecuente logo\n\nCANADIAN TIRE logo\n\nSEPHORA logo\n\nMicrosoft logo\n\nNETFLIX logo\n\nSpotify logo\n\nBooking.com logo\n\n\n\n<table>\n  <thead>\n    <tr>\n      <th>Point Solutions</th>\n      <th>Predictive Systems</th>\n      <th>Incremental Systems</th>\n      <th>Enterprise Systems</th>\n    </tr>\n  </thead>\n  <tbody>\n    <tr>\n      <td>Scope: limited</td>\n      <td>Scope: limited</td>\n      <td>Scope: limited</td>\n      <td>Scope: broad</td>\n    </tr>\n    <tr>\n      <td>Experimentation: limited</td>\n      <td>Experimentation: limited</td>\n      <td>Experimentation: robust</td>\n      <td>Experimentation: robust</td>\n    </tr>\n    <tr>\n      <td>Automation: limited</td>\n      <td>Automation: robust</td>\n      <td>Automation: robust</td>\n      <td>Automation: robust</td>\n    </tr>\n  </tbody>\n</table>\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n9\n\n# Personalization can be anywhere in the MarTech stack\n\n*Ease of implementation and quality of customer experience vary*\n\n## Channel Specific Personalization\n\n* Example: email, text offers\n\nauto frecuente logo\n\n## Data Platform Integration\n\n* Example: sharing Wayfair and Perigold customer data across web sites\n\nPERIGOLD logo\n\nwayfair logo\n\n## Dedicated Personalization Engine\n\n* Real time, ML models, content customization\n\nDeep Brew: The secret AI engine behind Starbucks' 30% ROI - and what it can teach every CMO about the future of brand growth\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n10\n\n# Path to personalization at McDonald’s illustrates the technical challenges\n\nMcDonald's logo\n\n## Dynamic Yield\n\n* McDonald’s bought Dynamic Yield in 2019 for roughly $300 million dollars to help <u>modernize and personalize its drive-thru experience, outdoor menus and digital ordering kiosks.</u>\n\n* In the AI/ML space Aspectiva (Walmart) and Zodiac, Invertex (Nike) were three notable acquisitions.\n\n* In April 2022, McDonald’s sold the company to Mastercard for $270 million\n\nWhat happened?\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n11\n\n# Ongoing strategic challenge for McD\n\nMcDonald's logo\n\n* 40% of restaurants still use the Dynamic Yield recommendation software, post-sale (e.g., drive thru menus)\n\n* The software is not proprietary\n\n* Dynamic yield is now courting other QSR clients\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n12\n\n# Personalization efforts today\n\nMcDonald's logo\n\n* Google\n    - McD announces strategic partnership with Google to advance AI/ML initiatives\n\n* Personalization is a central component of the partnership\n\n* Personalization capability is critical to McDonald’s loyalty strategy\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n13\n\n# Personalization is not software…it is capability\n\nIt requires:\n\n* Architecture\n\n* Data and tech integration\n\n* Data governance\n\n* Execution\n\n* Operational integration\n\nNorthwestern Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n14\n\n# Learning objectives\n\n* **Personalization capability**\n\nPersonalization is a growth lever. If you are Stitch Fix, personalization is the business model. These firms invest in a spectrum of personalization capabilities.\n\n* **Personalization in CPG**\n\nA digital loyalty program for a CPG firm like Coke isn't about competing with Kroger. It's about the basket, the data, and the customer relationship.\n\n* **Impact of privacy regulations on loyalty programs**\n\nLike CPG, privacy regulations are creating walls between the end consumer and the firm. The goal is to make data valuable so that you are not entirely dependent on someone else's lens into your customer. The question isn't \"Is data good or bad?\" The real question is: Who owns it? Who controls it? And what is the value derived for both firms and consumers?\n\nNorthwestern Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n15\n\n# Personalization for CPG products\n\n+one Powered by THE Coca-Cola COMPANY logo\n\nCollage of Kellogg's and Pringles products with a \"Take a Quiz\" digital interface\n\njoin the M&M'S Fun Club earn points & get sweet rewards signup for free! advertisement with M&M characters\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n16\n\n# Coca-Cola's Loyalty Journey\n\nmycoke rewards .com logo\n\n+one THE Coca-Cola COMPANY logo\n\n*Three attempts to solve the CPG data problem — each revealing the structural limits*\n\n## PRE-2006: NO LOYALTY\n\n**The business**\n\n$46B revenue, 1.9B servings/day\n200+ countries, 500+ brands\n\n**Marketing**\n\nMass TV, print, outdoor\n\"Open Happiness,\" polar bears\nTrade promotions to retailers\n(~50-60% of marketing budget)\n\n**Customer data**\n\nNone. Zero. Coke knows how many cases ship to Kroger.\nDoesn't know who drinks them, how often, or what else they buy.\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n17\n\n# Coca-Cola's Loyalty Journey\n\nmycoke rewards .com logo +one THE Coca-Cola COMPANY logo\n\nThree attempts to solve the CPG data problem — each revealing the structural limits\n\n## PRE-2006: NO LOYALTY\n\n**The business**\n\n$46B revenue, 1.9B servings/day\n200+ countries, 500+ brands\n\n**Marketing**\n\nMass TV, print, outdoor\n\"Open Happiness,\" polar bears\nTrade promotions to retailers\n(~50-60% of marketing budget)\n\n**Customer data**\n\nNone. Zero. Coke knows how many cases ship to Kroger.\n\nDoesn't know who drinks them, how often, or what else they buy.\n\n## 2006–2017: MY COKE REWARDS\n\n**The mechanism**\n\nEnter alphanumeric code from under bottle cap on a website\nPoints redeemed for prizes\n\n**Scale**\n\n23M registered, ~3.2M active\n(~1% of daily servings)\n\n**Why it failed**\n\nClunky manual code entry\nTransactional — contradicted a brand built on emotional connection\nRewards unrelated to brand (Blockbuster cards, GPS devices)\nPoint devaluation bred frustration\nShut down June 2017; sued by members who lost points\n\nBottle caps showing \"Enter code @ mycoke rewards .com\" and alphanumeric codes\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole 18\n\n# Coca-Cola's Loyalty Journey\n\nmycoke rewards .com logo\n\n+one THE Coca-Cola COMPANY logo\n\n*Three attempts to solve the CPG data problem — each revealing the structural limits*\n\n## PRE-2006: NO LOYALTY\n\n### The business\n\n$46B revenue, 1.9B servings/day\n200+ countries, 500+ brands\n\n### Marketing\n\nMass TV, print, outdoor\n\"Open Happiness,\" polar bears\nTrade promotions to retailers\n(~50-60% of marketing budget)\n\n### Customer data\n\nNone. Zero. Coke knows how many cases ship to Kroger.\nDoesn't know who drinks them, how often, or what else they buy.\n\n## 2006–2017: MY COKE REWARDS\n\n### The mechanism\n\nEnter alphanumeric code from under bottle cap on a website\nPoints redeemed for prizes\n\n### Scale\n\n23M registered, ~3.2M active\n(~1% of daily servings)\n\n### Why it failed\n\nClunky manual code entry\nTransactional — contradicted a brand built on emotional connection\nRewards unrelated to brand (Blockbuster cards, GPS devices)\nPoint devaluation bred frustration\nShut down June 2017; sued by members who lost points\n\n## 2018–NOW: DIGITAL / +ONE APP\n\n### The mechanism\n\nMobile app: scan codes with camera, location-based perks, gamification, brand content\n\n### Scale\n\n\"Connected packs\" in 40+ markets\n200+ active programs (2024)\n\n### What changed\n\nExperience-based, not transactional\nCustom avatars, tiered status, cause support, brand experiences\nFirst-party data collection at scale\n\n### Japan: The exception\n\nCoke On: 50M downloads, 1M+ transactions/day — works because Coke owns the vending machines (no retailer wall)\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole 19\n\n# Coca-Cola's Loyalty Journey\n\nmycoke rewards .com logo\n\n+one logo\n\n*Three attempts to solve the CPG data problem — each revealing the structural limits*\n\n## PRE-2006: NO LOYALTY\n\n**The business**\n\n$46B revenue, 1.9B servings/day\n200+ countries, 500+ brands\n\n**Marketing**\n\nMass TV, print, outdoor\n\"Open Happiness,\" polar bears\nTrade promotions to retailers\n(~50-60% of marketing budget)\n\n**Customer data**\n\nNone. Zero. Coke knows how many cases ship to Kroger.\nDoesn't know who drinks them, how often, or what else they buy.\n\n## 2006–2017: MY COKE REWARDS\n\n**The mechanism**\n\nEnter alphanumeric code from under bottle cap on a website\nPoints redeemed for prizes\n\n**Scale**\n\n23M registered, ~3.2M active\n(~1% of daily servings)\n\n**Why it failed**\n\nClunky manual code entry\nTransactional — contradicted a brand built on emotional connection\nRewards unrelated to brand (Blockbuster cards, GPS devices)\nPoint devaluation bred frustration\nShut down June 2017; sued by members who lost points\n\n## 2018–NOW: DIGITAL / +ONE APP\n\n**The mechanism**\n\nMobile app: scan codes with camera, location-based perks, gamification, brand content\n\n**Scale**\n\n\"Connected packs\" in 40+ markets (scannable)\n200+ active programs (2024)\n\n**What changed**\n\nExperience-based, not transactional\nCustom avatars, tiered status, cause support, brand experiences\nFirst-party data collection at scale\n\n**Japan: The exception**\n\nCoke On: 50M downloads, 1M+ transactions/day — works because Coke owns the vending machines (no retailer wall)\n\n> **The scale problem:** Coke serves 1.9 billion servings per day. Even 23M members at peak was ~1% of daily volume. At that penetration, the data can't change product decisions or meaningfully shift marketing allocation. The retailer wall remains.\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n20\n\n# The Traditional CPG Model: Walls limits data flows\n\n*The brand that makes the product doesn't know who buys it*\n\n```mermaid\ngraph LR\n    subgraph CPG_BRAND [**CPG BRAND**]\n        direction TB\n        A1[Manufactures/sources product]\n        A2[Sets brand strategy]\n        A3[Designs packaging]\n        A4[Sets wholesale price]\n    end\n\n    subgraph RETAILER [**RETAILER**]\n        direction TB\n        B1[Owns shelf, price, checkout]\n        B2[Owns transaction data]\n        B3[Owns customer relationship]\n        B4[Controls the purchase moment]\n    end\n\n    subgraph CONSUMER [**CONSUMER**]\n        direction TB\n        C1[Buys at store/online]\n        C2[Brand has no visibility into who, when,how often, or what else they buy]\n    end\n\n    CPG_BRAND -- \"arrowTHE WALL\" --> RETAILER\n    RETAILER -- \"arrowTHE WALL\" --> CONSUMER\n\n    style CPG_BRAND fill:#fff,stroke:#000,stroke-width:2px\n    style RETAILER fill:#ccc,stroke:#000,stroke-width:2px\n    style CONSUMER fill:#aaa,stroke:#000,stroke-width:2px\n```\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole 21\n\n# What are the implications for Coke?\n\n*The brand that makes the product doesn't know who buys it*\n\n<table>\n    <tr>\n        <th>**CPG BRAND**</th>\n        <th></th>\n        <th>**RETAILER**</th>\n        <th></th>\n        <th>**CONSUMER**</th>\n    </tr>\n    <tr>\n        <td>Manufactures/sources product<br/>Sets brand strategy<br/>Designs packaging<br/>Sets wholesale price</td>\n        <td>arrow</td>\n        <td>Owns shelf, price, checkout<br/>Owns transaction data<br/>Owns customer relationship<br/>Controls the purchase moment</td>\n        <td>arrow</td>\n        <td>Buys at store/online<br/>Brand has no visibility into who, when,<br/>how often, or what else they buy</td>\n    </tr>\n    <tr>\n        <td></td>\n        <td>**THE WALL**</td>\n        <td></td>\n        <td>**THE WALL**</td>\n        <td></td>\n    </tr>\n</table>\n\n> ## Can't identify heavy buyers\n> The 20% driving 80% of volume are invisible.\n> Can't distinguish loyal customers from deal-switchers.\n\nNorthwestern Kellogg logo\n\nCopyright © 2026 Anderson, O’Toole 22\n\n# What are the implications for Coke?\n\n*The brand that makes the product doesn't know who buys it*\n\n**CPG BRAND**\n* Manufactures/sources product\n* Sets brand strategy\n* Designs packaging\n* Sets wholesale price\n\narrow\n\nTHE WALL\n\n**RETAILER**\n* Owns shelf, price, checkout\n* Owns transaction data\n* Owns customer relationship\n* Controls the purchase moment\n\narrow\n\nTHE WALL\n\n**CONSUMER**\n* Buys at store/online\n* Brand has no visibility into who, when, how often, or what else they buy\n\n**Can't identify heavy buyers**\nThe 20% driving 80% of volume are invisible.\nCan't distinguish loyal customers from deal-switchers.\n\n**Marketing is mass, not targeted**\nEvery dollar reaches everyone — your customers, competitors' customers, and non-category buyers.\n\nNorthwestern Kellogg logo\n\nCopyright © 2026 Anderson, O’Toole\n\n23\n\n# What are the implications for Coke?\n\n*The brand that makes the product doesn't know who buys it*\n\n<table>\n    <tr>\n        <th>CPG BRAND</th>\n        <th>arrow</th>\n        <th>RETAILER</th>\n        <th>arrow</th>\n        <th>CONSUMER</th>\n    </tr>\n    <tr>\n        <td>Manufactures/sources product<br/>Sets brand strategy<br/>Designs packaging<br/>Sets wholesale price</td>\n        <td></td>\n        <td>Owns shelf, price, checkout<br/>Owns transaction data<br/>Owns customer relationship<br/>Controls the purchase moment</td>\n        <td></td>\n        <td>Buys at store/online<br/>Brand has no visibility into who, when,<br/>how often, or what else they buy</td>\n    </tr>\n    <tr>\n        <td></td>\n        <td>**THE WALL**</td>\n        <td></td>\n        <td>**THE WALL**</td>\n        <td></td>\n    </tr>\n</table>\n\n## Can't identify heavy buyers\n\nThe 20% driving 80% of volume are invisible.\nCan't distinguish loyal customers from deal-switchers.\n\n## Marketing is mass, not targeted\n\nEvery dollar reaches everyone — your customers, competitors' customers, and non-category buyers.\n\n## Trade promotions dominate spend\n\n~50-60% of marketing budget goes to paying the retailer for shelf space, end caps, price reductions.\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole 24\n\n# What are the implications for Coke?\n\n*The brand that makes the product doesn't know who buys it*\n\n```mermaid\ngraph LR\n    subgraph CPG_BRAND [CPG BRAND]\n        direction TB\n        A1[Manufactures/sources product]\n        A2[Sets brand strategy]\n        A3[Designs packaging]\n        A4[Sets wholesale price]\n    end\n\n    CPG_BRAND -->|THE WALL| RETAILER_BOX\n\n    subgraph RETAILER_BOX [RETAILER]\n        direction TB\n        B1[Owns shelf, price, checkout]\n        B2[Owns transaction data]\n        B3[Owns customer relationship]\n        B4[Controls the purchase moment]\n    end\n\n    RETAILER_BOX -->|THE WALL| CONSUMER_BOX\n\n    subgraph CONSUMER_BOX [CONSUMER]\n        direction TB\n        C1[Buys at store/online]\n        C2[Brand has no visibility into who, when,how often, or what else they buy]\n    end\n```\n\n## Can't identify heavy buyers\n\nThe 20% driving 80% of volume are invisible.\nCan't distinguish loyal customers from deal-switchers.\n\n## Marketing is mass, not targeted\n\nEvery dollar reaches everyone — your customers, competitors' customers, and non-category buyers.\n\n## Trade promotions dominate spend\n\n~50-60% of marketing budget goes to paying the retailer for shelf space, end caps, price reductions.\n\n## Can't measure individual-level ROI\n\nDid the ad cause the purchase? Was she buying Coke anyway? Attribution is nearly impossible.\n\nNorthwestern Kellogg logo\n\nCopyright © 2026 Anderson, O’Toole 25\n\n# Marketing spend is shotgun, not targeted\n\nThe brand that makes the product doesn't know who buys it\n\n```mermaid\ngraph LR\n    CPG[\"**CPG BRAND**Manufactures/sources productSets brand strategyDesigns packagingSets wholesale price\"] --> T1[\"THE WALL\"]\n    T1 --> RETAILER[\"**RETAILER**Owns shelf, price, checkoutOwns transaction dataOwns customer relationshipControls the purchase moment\"]\n    RETAILER --> T2[\"THE WALL\"]\n    T2 --> CONSUMER[\"**CONSUMER**Buys at store/onlineBrand has no visibility into who, when,how often, or what else they buy\"]\n```\n\n### Can't identify heavy buyers\nThe 20% driving 80% of volume are invisible. Can't distinguish loyal customers from deal-switchers.\n\n### Marketing is mass, not targeted\nEvery dollar reaches everyone — your customers, competitors' customers, and non-category buyers.\n\n### Trade promotions dominate spend\n~50-60% of marketing budget goes to paying the retailer for shelf space, end caps, price reductions.\n\n### Can't measure individual-level ROI\nDid the ad cause the purchase? Was she buying Coke anyway? Attribution is nearly impossible.\n\n**Result:** Enormous marketing inefficiency. $4B annual marketing spend reaching millions who may never buy your product — and no way to know which millions.\n\nCopyright © 2026 Anderson, O’Toole <page_number>26</page_number>\n\n# Why was My Coke Rewards shut down?\n\n+one Powered by THE Coca-Cola COMPANY logo\n\n**My Coke Rewards**\n\n* Coca-Cola serves 1.9 billion drinks a day. At its peak, My Coke Rewards had 23 million members.\n\n* Why do you think that program was shut down— and was the problem execution or structure?\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n27\n\n+one Powered by THE Coca-Cola COMPANY logo\n\n# What can Coke personalize?\n\n## Data\n\n* What does Coca-Cola actually know about the person drinking a Coke right now? Compare that to what Stitch Fix knows about a customer opening a Fix.\n\n* The Forrester article describes a personalization **spectrum — segmentation, discrete interactions, personas, contextual anticipation.**\n\n* Where can Coke realistically operate on that spectrum? What would it take to move one level deeper?\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n28\n\n# Coke has limited data, which limits personalization\n\n+one Powered by THE Coca-Cola COMPANY logo\n\n## Coke Data\n\n* Episodic, voluntary scan data\n\n* Limited SKU-level visibility\n\n* No basket context\n\n* No competitive switching signals\n\n* No price paid or retailer insight\n\n## Stitch Fix Data\n\n* Full transaction history, price paid\n\n* Item-level preferences, keep/return decisions\n\n* Inventory constraints\n\n* Lifetime value trajectory\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n29\n\n# Coke has limited data, which limits personalization\n\n+one Powered by THE Coca-Cola COMPANY logo\n\n## Coke Data\n\n* Episodic, voluntary scan data\n\n* Limited SKU-level visibility\n\n* No basket context\n\n* No competitive switching signals\n\n* No price paid or retailer insight\n\n## Stitch Fix Data\n\n* Full transaction history, price paid\n\n* Item-level preferences, keep/return decisions\n\n* Inventory constraints\n\n* Lifetime value trajectory\n\n## Personalization Today at Coke (using Forrester personalization spectrum)\n\n* *Segmentation*: lots of data, classic segmentation\n\n* *Discrete interactions*: location pushes, personalized offers, gamification\n\n* *Persona depth*: Limited, no purchase data\n\n* *Contextual anticipation*: Highly Constrained, no purchase data\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n30\n\n# Does +one affect retail channel power?\n\n+one Powered by THE Coca-Cola COMPANY logo\n\n## The Retailer Wall\n\n* Kroger has 60 million loyalty households and knows exactly who buys Coke, how often, what else is in their cart, and whether they switch when Pepsi is on sale. Coke has almost none of that data.\n\n* Who has more power in that negotiation — and how does Coke's own loyalty program change the dynamic?\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n31\n\n+one Powered by THE Coca-Cola COMPANY logo\n\n# Does +one affect retail channel power?\n\n*Information asymmetry = negotiation asymmetry.*\n\n**Retailer power comes from ...**\n\n* Transaction ownership\n\n* Basket-level data\n\n* Control of shelf and price\n\n* Monetization of media inventory\n\n* Private label alternatives\n\n* Retailers have structural information advantage\n\n*Without +one, Coke knows very little*\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n32\n\n+one Powered by THE Coca-Cola COMPANY logo\n\n# Does +one affect retail channel power?\n\n*Information asymmetry = negotiation asymmetry.*\n\n## Retailer power comes from ...\n\n* Transaction ownership\n\n* Basket-level data\n\n* Control of shelf and price\n\n* Monetization of media inventory\n\n* Private label alternatives\n\n* Retailers have structural information advantage\n\n*Without +One, Coke knows very little*\n\n## +one reduces information asymmetry\n\n* Gives Coke an independent consumer panel\n\n* Reduces total dependence on retailer data\n\n* Improves trade and media allocation\n\n* Creates direct communication with consumers\n\n* Strengthens long-run negotiating position\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n33\n\n# Does +one affect retail channel power?\n\n+one Powered by THE Coca-Cola COMPANY logo\n\n*Information asymmetry = negotiation asymmetry.*\n\n## Retailer power comes from:\n\n* Transaction ownership\n\n* Basket-level data\n\n* Control of shelf and price\n\n* Monetization of media inventory\n\n* Private label alternatives\n\n* Retailers have structural information advantage\n\n## +one reduces information asymmetry\n\n* Gives Coke an independent consumer panel\n\n* Reduces total dependence on retailer data\n\n* Improves trade and media allocation\n\n* Creates direct communication with consumers\n\n* Strengthens long-run negotiating position\n\n*Without +One, Coke knows very little*\n\nDeeper personalization would require owning distribution (Japan vending model)\ngoing direct-to-consumer, forming deep data partnerships\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n34\n\n+one Powered by THE Coca-Cola COMPANY logo\n\n# Why continue Coke Loyalty Program?\n\n## The Puzzle\n\n* Given everything we've discussed about the scale problem ...\n\n* Why is Coke still investing in digital loyalty?\n\n* If the program can never reach more than a fraction of customers, what's the actual return?\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n35\n\n# Coke Digital Loyalty: A Different Kind of Value\n\n+one Powered by THE Coca-Cola COMPANY logo\n\n+one does not eliminate the retailer wall. It mitigates information disadvantage.\n\n**DATA**\n*(thin but owned)*\n\n* App profile data\n* Scan/purchase occasions\n* Location signals\n* Content engagement\n* Campaign responses\n* Product preferences\n\n*First-party data you legally own and control*\n\n$\\rightarrow$\n\n**① Targeted digital advertising**\n3M profiled members $\\rightarrow$ lookalike audiences for 300M ad impressions. Reduces waste in $4B ad spend.\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n36\n\n+one Powered by THE Coca-Cola COMPANY logo\n\n# Coke Digital Loyalty: A Different Kind of Value\n\n+one does not eliminate the retailer wall. It mitigates information disadvantage.\n\n# DATA\n\n*(thin but owned)*\n\nApp profile data\nScan/purchase occasions\nLocation signals\nContent engagement\nCampaign responses\nProduct preferences\n\n*First-party data you legally own and control*\n\n## ① Targeted digital advertising\n\n3M profiled members → lookalike audiences for 300M ad impressions. Reduces waste in $4B ad spend.\n\n## ② Product intelligence panel\n\nA representative sample, not a census. Nielsen built a $6B business from 40K households. Coke has millions.\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n37\n\n+one Powered by THE Coca-Cola COMPANY logo\n\n# Coke Digital Loyalty: A Different Kind of Value\n\n+one does not eliminate the retailer wall. It mitigates information disadvantage.\n\n* **DATA**\n  *(thin but owned)*\n    * App profile data\n    * Scan/purchase occasions\n    * Location signals\n    * Content engagement\n    * Campaign responses\n    * Product preferences\n  *First-party data you legally own and control*\n    * ① **Targeted digital advertising**\n      3M profiled members → lookalike audiences for 300M ad impressions. Reduces waste in $4B ad spend.\n    * ② **Product intelligence panel**\n      A representative sample, not a census. Nielsen built a $6B business from 40K households. Coke has millions.\n    * ③ **Counterweight to retailer power**\n      Kroger, Walmart, Target are building their own data. If retailer knows your customer better than you — you at a huge disadvantage.\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n38\n\n+one Powered by THE Coca-Cola COMPANY logo\n\n# Coke Digital Loyalty: A Different Kind of Value\n\n+one does not eliminate the retailer wall. It mitigates information disadvantage.\n\n# DATA\n\n*(thin but owned)*\n\nApp profile data\nScan/purchase occasions\nLocation signals\nContent engagement\nCampaign responses\nProduct preferences\n\n*First-party data you legally own and control*\n\n## ① Targeted digital advertising\n\n3M profiled members → lookalike audiences for 300M ad impressions. Reduces waste in $4B ad spend.\n\n## ② Product intelligence panel\n\nA representative sample, not a census. Nielsen built a $6B business from 40K households. Coke has millions.\n\n## ③ Counterweight to retailer power\n\nKroger, Walmart, Target are building their own data. If retailer knows your customer better than you — you at a huge disadvantage.\n\n## ④ Direct communication channel\n\nPush notifications bypass the retailer for communication — even though you can't bypass them for distribution.\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n39\n\n+one Powered by THE Coca-Cola COMPANY logo\n\n# Coke Digital Loyalty: A Different Kind of Value\n\n+one does not eliminate the retailer wall. It mitigates information disadvantage.\n\n**DATA**\n\n*(thin but owned)*\n\nApp profile data\nScan/purchase occasions\nLocation signals\nContent engagement\nCampaign responses\nProduct preferences\n\n***First-party data you legally own and control***\n\n**① Targeted digital advertising**\n\n3M profiled members → lookalike audiences for 300M ad impressions. Reduces waste in $4B ad spend.\n\n**② Product intelligence panel**\n\nA representative sample, not a census. Nielsen built a $6B business from 40K households. Coke has millions.\n\n**③ Counterweight to retailer power**\n\nKroger, Walmart, Target are building their own data. If retailer knows your customer better than you — you at a huge disadvantage.\n\n**④ Direct communication channel**\n\nPush notifications bypass the retailer for communication — even though you can't bypass them for distribution.\n\nThe ROI isn't \"does this program pay for itself in incremental Coke sales?\" It's \"does owning first-party data reduce the waste in our $4B ad budget by even a few percentage points?\" In a post-cookie world, even thin first-party data is infinitely more valuable than the zero they had before.\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n40\n\n# Is the privacy calculus different in +one?\n\n+one Powered by THE Coca-Cola COMPANY logo\n\n## Privacy\n\n* The HBR article from today's class says data instrumentation requires capturing every interaction at granular level. Coke's program is entirely voluntary — consumers choose to scan codes and share data.\n\n* Does that change the privacy calculus? Is voluntary thin data less concerning than involuntary deep data?\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n41\n\n# Kellogg’s (became Kellanova then sold to Mars) shut down its loyalty program in 2022\n\nCollage of Kellogg's products including Frosted Flakes, Pringles, Pop-Tarts, and Cheez-It with a laptop and phone showing the rewards program interface\n\nYellow waffle graphic\n\nKellogg's Family Rewards logo\n\nPurple Pop-Tart graphic\n\nOrange triangle graphic\n\nOrange star graphic\n\nGreen triangle graphic\n\n# Join the Family!\n\nGet rewarded with free samples, discounts on brands you love, exciting giveaways, charity donations and more. Sign up to start the fun!\n\nAlready a member? Sign in\n\nWhy did they shut it down? Isn’t this just like +one?\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n42\n\n# Kellogg's Family Rewards: A Cautionary Tale\n\n*Launched 2012 · Peak: 33 million members · Shut down 2022*\n\n## What Worked (Initially)\n\n* Codes inside packages → points\n\n* Receipt scanning (later iteration)\n\n* 33M registered participants at peak\n\n* Multi-brand portfolio coverage\n\nKellogg's Family Rewards promotional graphic showing various cereal boxes and snacks with \"100 NEW BONUS POINTS\" text\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n43\n\n# Kellogg's Family Rewards: A Cautionary Tale\n\n*Launched 2012 · Peak: 33 million members · Shut down 2022*\n\n## What Worked (Initially)\n\n* Codes inside packages → points\n\n* Receipt scanning (later iteration)\n\n* 33M registered participants at peak\n\n* Multi-brand portfolio coverage\n\n## Engagement Eroded\n\n* Codes notoriously hard to read\n\n* Social pages dormant 3+ years\n\n* Jan 2022 relaunch: 5 tokens/month minimum to redeem\n\n* Rewards: Cheez-It socks, $5 gift cards\n\nKellogg's Family Rewards promotional graphic showing \"WELCOME TO THE NEW & IMPROVED FAMILY REWARDS\" with icons for SHOP, SEND, EARN, and REDEEM, and a note that \"NEW FAMILY RECEIPT UPLOAD NOW RUNS ON THE SNIPP PLATFORM\"\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n44\n\n# Kellogg's Family Rewards: A Cautionary Tale\n\n*Launched 2012 · Peak: 33 million members · Shut down 2022*\n\nToday's discussion emphasizes a course theme: loyalty programs are increasingly about\n\n## What Worked (Initially)\n\nIf you are Wayfair, Hyatt or McDonald's, you already sit close to the transaction.\n\n* Codes inside packages → points\n\n* Receipt scanning (later iteration)\n\n* 33M registered participants at peak\n\n* Multi-brand portfolio coverage\n\n## Engagement Eroded\n\n* Codes notoriously hard to read\n\n* Social pages dormant 3+ years\n\n* Jan 2022 relaunch: 5 tokens/month minimum to redeem\n\n* Rewards: Cheez-It socks, $5 gift cards\n\n## The Final Blow\n\n* Kellogg's split into 3 companies\n\n* Frosted Flakes, Eggo, MorningStar → separate owners\n\n* No company claimed the program\n\n* Corporate disruption orphaned the platform\n\nThe question isn't \"Is data good or bad?\" The real question is: Who owns it? Who controls\n\nIf sales is the goal, a core problem is incrementality\nLoyal customers join the program\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n45\n\n# M&M’s continues to operate a loyalty program\n\nScreenshot of M&M'S Fun Club landing page featuring M&M'S characters and a \"sign up for free!\" button.\n\nGraphic titled \"how it works\" showing a shopping cart with M&M'S and text: \"buy M&M'S & upload your receipt. scan receipts from any retailer!\"\n\nGraphic titled \"how it works\" showing a hand receiving points and text: \"earn points by completing activities and scanning receipts\"\n\nGraphic titled \"how it works\" showing a gift box and text: \"get rewards! earn sweeps entries & redeem points for sweet swag\"\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n46\n\n# M&M's Fun Club: The Next-Generation Attempt\n\n*Launched February 2025 · Powered by Fetch · Brand-specific design*\n\n## Two Lessons Learned from KFR & Coke\n\n### 1. Brand-specific, not portfolio-wide\n\nM&M's has experiential assets (Times Square store) Kellogg's lacked. A split portfolio can't kill a single-brand program.\n\n### 2. Outsource the platform entirely\n\nMars partners with Fetch rather than building its own app — tapping 17M monthly active users already submitting 8.5M receipts/day.\n\n$2.5 B valuation (backed by NielsenIQ, Softbank)\n\n> **Open Question: Has Mars solved the retailer wall — or just replaced one intermediary with a friendlier one?**\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n47\n\n# Fetch is one of two new loyalty intermediaries in CPG\n\n*CPG brands solve the retailer wall — only to face a new one*\n\nIf you are Wayfair, Hyatt or McDonald's, you already sit close to the transaction.\n\n<table>\n    <tr>\n        <th>Fetch</th>\n        <th>Instacart</th>\n    </tr>\n</table>\n<table>\n    <tr>\n        <th>**17M**<br/>monthly active users</th>\n        <th>**8.5M**<br/>receipts scanned daily</th>\n        <th>**1,800+**<br/>retail banners / ~100K stores</th>\n        <th>**$1.18B**<br/>ad revenue (2024)</th>\n    </tr>\n</table>\n<table>\n    <tr>\n        <th>**How it works:**</th>\n        <th>**VS**</th>\n        <th>**How it works:**</th>\n    </tr>\n</table>\n<table>\n    <tr>\n        <th>Consumers scan any receipt → earn points → redeem rewards. No brand app required.</th>\n        <th>Both sit between brand &amp; consumer</th>\n        <th>Delivers groceries from 1,800+ retailers. Sits inside the transaction — sees the full basket, not just one brand's SKUs.</th>\n    </tr>\n</table>\n<table>\n    <tr>\n        <th>**What CPG brands get:**</th>\n        <th>EMPTY</th>\n        <th>**What CPG brands get:**</th>\n    </tr>\n</table>\n<table>\n    <tr>\n        <th>First-party purchase data across all retailers, closed-loop ad measurement, category exclusivity within the platform, 62M data lines/day to brand CDPs.</th>\n        <th>EMPTY</th>\n        <th>Sponsored search at point of purchase, real-time SKU-level data via Consumer Insights Portal, 15%+ avg. sales lift for advertisers, 7,500+ brand partners already on platform.</th>\n    </tr>\n</table>\n\nBut if you are Coke — or any CPG brand — you are structurally blind. The retailer owns the strategic value of data ownership.\n\n> Fetch controls the receipt data ecosystem. Instacart controls the delivery transaction.\n> CPG brands still have intermediaries.\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole 48\n\n# Instacart personalized pricing backlash\n\n# Instacart's AI-Enabled Pricing Experiments May Be Inflating Your Grocery Bill, CR and Groundwork Collaborative Investigation Finds\n\nIllustration showing a grocery bag with various products (Ruffles, Kellogg's, Heinz) and different price points ($114.34, $119.85, $122.15, $122.45, $123.93) associated with different user avatars.\n\nA Consumer Reports and Groundwork Collaborative investigation found that some grocery prices differed by as much as 23 percent per item from one Instacart customer to the next. In an inadvertently sent email, the company calls one pricing tactic \"smart rounding.\"\n\nDecember 2025\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n49\n\nA photograph of a retail electronics store aisle with large televisions on display. Overlaid text reads: \"Jan 23, 2026. States move to curb AI-driven 'surveillance pricing'\"\n\nSTATE AFFAIRS logo\n\nState policymakers are scrambling to establish consumer protections as retailers increasingly use artificial intelligence-powered <u>personalized pricing.</u>\n\nIn Maryland this week, Democratic Gov. Wes Moore — flanked by House Speaker <u>Joseline Peña-Melnyk</u> and Senate President <u>Bill Ferguson</u> — announced that one of his legislative priorities for the year is banning <u>\"dynamic pricing\"</u> in grocery stores.\n\nSo-called <u>surveillance pricing</u> is <u>made possible by companies' ability to collect reams of data about individual consumers, whether they're shopping online or in a brick and mortar store.</u>\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n50\n\n# Learning objectives\n\n* Personalization capability\n\n* Personalization in CPG\n\n* **Impact of privacy regulations on loyalty programs**\n\nNorthwestern Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n51\n\n# Online platforms personalize content\n\nYouTube logo\n\nTwitter logo\n\nFacebook logo\n\nTikTok logo\n\nAmazon logo\n\nWayfair logo\n\nPersonalize advertising\n\nPersonalize prices\n\nPersonalize product recommendations\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n52\n\n# Customer tracking enables personalized product recommendations on these platforms\n\nIllustration of a person walking through a digital landscape with large eyes in browser windows tracking their movements\n\nNorthwestern Kellogg logo\n\nCopyright © 2026 Anderson, O’Toole 53\n\n# Regulators are concerned about user privacy\n\n* Consumers do not know what or how their data is used\n\n* Competition & Markets Authority (UK) and FTC (US)\n\n> “Personalisation can be harmful ... These harms often occur through the manipulation of consumer choices, without the awareness of the consumer.”\n\n**Algorithms: How they can reduce competition and harm consumers**\nPublished 19 January 2021\n\nNorthwestern Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n54\n\n# Regulators are concerned about user privacy\n\n* Consumers do not know what or how their data is used\n\n* Competition & Markets Authority (UK) and FTC (US)\n\n> “Personalisation can be harmful ... These harms often occur through the manipulation of consumer choices, without the awareness of the consumer.”\n\nBrowsers Safari and Chrome icons limit online consumer tracking\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n55\n\n# Wayfair personalization of product rankings was believed to be highly effective\n\n* Wayfair needed to move from ‘belief’ to ‘evidence’\n\n* Wayfair needed to assess the risk: how much value was at stake due to privacy regulations\n\n* Wayfair needed to explore solutions\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n56\n\n# Wayfair personalizes product rankings\n\n## Kitchen & Dining Chairs\n\n32,919 Results\n\nDurfinger Polyurethane Side Chair (Set of 4) by Wade Logan\n\nVelvet Side Chair (Set of 4) by Trent Austin Design\n\nAustwell Parsons Chair (Set of 2) by Wade Logan\n\nKora Upholstered Side Chair (Set of 2) by Wade Logan\n\n**Must-Grab Office Sets**\n\nShop desks, space-saving console tables, and more.\n\nOffice set image 1\n\nOffice set image 2\n\nGillham Side Chair (Set of 4) by Mercury Row\n\nAlmedacheatham Side Chair (Set of 4) by Mercury Row\n\nShanee Tufted Velvet Side Chair (Set of 4) by Everly Quinn\n\nAnona Side Chair (Set of 2) by Wade Logan\n\nNorthwestern Kellogg logo\n\nCopyright © 2026 Anderson, O’Toole\n\n57\n\n# Wayfair personalizes product rankings\n\n## Kitchen & Dining Chairs\n\n## Personalized Rankings\n\n32,919 Results\n\nWayfair product search results page showing various dining chairs with prices and ratings\n\nDurflinger Polyurethane Side Chair (Set of 4) by Wade Logan, $184.99\n\nAustwell Parsons Chair (Set of 2) by Wade Logan, $156.99\n\nKora Upholstered Side Chair (Set of 2) by Wade Logan, $132.99\n\nUser icon\n\n$158.99\nPersonalized ranking example 1: Blue tufted chairs\n\n$259.99\nPersonalized ranking example 2: Blue tufted chair back view\n\n**Must-Grab Office Sets**\n\nShop desks, space-saving console tables, and more.\n\nOffice set promotional images\n\nUser icon\n\n$309.99\nPersonalized ranking example 3: Beige tufted chair\n\n$219.99\nPersonalized ranking example 4: Beige tufted chairs at a table\n\nGillham Side Chair (Set of 4) by Mercury Row, $179.99\n\nShanee Tufted Velvet Side Chair (Set of 4) by Everly Quinn, $263.99\n\nAnona Side Chair (Set of 2) by Wade Logan, $66.99\n\n*Sponsored*\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n58\n\n# Platforms like Wayfair track users across sessions\n\nDiagram showing a user being tracked across different devices and browsers: starting on a smartphone with Safari, moving to a desktop with Chrome, and then to another desktop session with Chrome.\n\nNorthwestern Kellogg logo\n\nCopyright © 2026 Anderson, O’Toole\n\n59\n\n# Large-scale field experiment at Wayfair\n\n9 million consumers over 24 months\n\n**Treatment** | **Control**\n\n### Personalized Rankings | Non-Personalized (Bestseller) Rankings\n\nUser icon\n\nWayfair product listing showing blue chairs priced at $158.99 and $259.99 Wayfair product listing showing blue chairs priced at $158.99 and $259.99 Wayfair product listings showing various chairs priced at $134.99, $189.99, $189.99, and $246.99\n\nUser icon\n\nWayfair product listing showing beige chairs priced at $309.99 and $219.99 Wayfair product listing showing beige chairs priced at $309.99 and $219.99 Wayfair product listing showing beige chairs priced at $309.99 and $219.99\n\nWayfair product listing showing a yellow chair priced at $134.99 Wayfair product listing showing grey chairs priced at $189.99 Wayfair product listing showing pink chairs priced at $189.99 Wayfair product listing showing green chairs priced at $246.99\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n60\n\n# What would you predict ...\n\n**Compared to non-personalized group, personalized group consumers ...**\n\nIcon of a hand scrolling on a smartphone\n\nIcon of a funnel with up and down arrows\n\nIcon of a clock\n\nIcon of a hand clicking a \"BUY\" button on a smartphone\n\nScrolling\n\nFiltering\n\nTime to Purchase\n(i.e., 1<sup>st</sup> search to\npurchase date)\n\nPurchase\n\nNorthwestern Kellogg logo\n\nCopyright © 2026 Anderson, O’Toole\n\n61\n\n# Personalization leads to lower search costs\n\nCompared to non-personalized group, personalized group consumers ...\n\nIcon of a hand scrolling on a smartphone\n\nIcon of a funnel with up and down arrows\n\nIcon of a clock\n\nIcon of a hand clicking a \"BUY\" button on a smartphone\n\nscroll less\n\nfilter less\n\npurchase faster\n\npurchase\n\n↓ -83 products\n\n↓ -1.9%\n\n↓ -2 days\n\n↑ +1.4%\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n62\n\n# What would you predict ...\n\nCompared to non-personalized group, in personalized group ...\n\nIcon of money/cash\n\nPrice Paid\n\nIcon of a package with a return arrow\n\nReturn Rate\n\nIcon of a shopping cart with a circular repeat arrow\n\nRepeat Purchase\n\nNorthwestern Kellogg logo\n\nCopyright © 2026 Anderson, O’Toole 63\n\n# Personalization benefits consumers\n\nCompared to non-personalized group, in personalized group ...\n\nIcon of dollar bills\n\nIcon of a package with a return arrow\n\nIcon of a shopping cart with a dollar sign and circular arrows\n\npurchase price\n\nproduct return\n\nrepeat purchase\n\n↑ +0.5%\n\n↓ -10%\n\n↑ +2.3%\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n64\n\n# Personalization benefits the platform ...\n\n**Platform**\n\n* Revenue ↑ +2%\n\n* Profit ↑ +1.3%\n\n    - ↑ repeat purchases\n\nToday's discussion emphasizes a course theme: loyalty programs are increasingly about the strategic value of data ownership.\n\nIf you are Wayfair, Hyatt or McDonald's, you already sit close to the transaction. Personalization is a growth lever. If you are Stitch Fix, personalization is the business model. These firms invest in a spectrum of personalization capabilities.\n\nBut if you are Coke — or any CPG brand — you are structurally blind. The retailer owns the basket, the data, and the customer relationship.\n\nA digital loyalty program for a CPG firm like Coke isn't about competing with Kroger. It's about reclaiming visibility of customers. Creating even a thin layer of first-party data is valuable so that you are not entirely dependent on someone else's lens into your customer.\n\nLike CPG, privacy regulations are creating walls between the end consumer and the firm. The question isn't \"Is data good or bad?\" The real question is: Who owns it? Who controls it? And what is the value derived for both firms and consumers?\n\nNorthwestern Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n65\n\n# Personalization benefits the platform ...\n\n**Platform**\n\nToday's discussion emphasizes a course theme: loyalty programs are increasingly about the strategic value of data ownership.\n\nIf you are Wayfair, Hyatt or McDonald's, you already sit close to the transaction. Personalization is a growth lever. If you are Stitch Fix, personalization is the business model. These firms invest in a spectrum of personalization capabilities.\n\n## What would you predict about seller impact?\n\n> ↑ repeat purchases\n\nthe basket, the data, and the customer relationship.\n\nA digital loyalty program for a CPG firm like Coke isn't about competing with Kroger. It's about reclaiming visibility of customers. Creating even a thin layer of first-party data is valuable so that you are not entirely dependent on someone else's lens into your customer.\n\nLike CPG, privacy regulations are creating walls between the end consumer and the firm. The question isn't \"Is data good or bad?\" The real question is: Who owns it? Who controls it? And what is the value derived for both firms and consumers?\n\nNorthwestern Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n66\n\n# Personalization benefits small sellers relatively more than large sellers\n\n<table>\n    <tr>\n        <th>Platform</th>\n        <th>Sellers</th>\n    </tr>\n</table>\n<table>\n    <tr>\n        <th>▶ Revenue ↑ +2%</th>\n        <th>Small sellers benefit the most</th>\n    </tr>\n</table>\n<table>\n    <tr>\n        <th>▶ Profit ↑ +1.3%</th>\n        <th>▶ ↑ +29 - 87% revenue</th>\n    </tr>\n</table>\n<table>\n    <tr>\n        <th>&gt; ↑ repeat purchases</th>\n        <th>▶ ↑ +15% visibility</th>\n    </tr>\n</table>\n<table>\n    <tr>\n        <th>EMPTY</th>\n        <th>Big sellers' revenue ↑ +2.7%</th>\n    </tr>\n</table>\n\nToday's discussion emphasizes a course theme: loyalty programs are increasingly about the strategic value of data ownership.\n\nIf you are Wayfair, Hyatt or McDonald's, you already sit close to the transaction. Personalization is a growth lever. If you are Stitch Fix, personalization is the business model. These firms invest in a spectrum of personalization capabilities.\n\nBut if you are Coke — or any CPG brand — you are structurally blind. The retailer owns the basket, the data, and the customer relationship.\n\nA digital loyalty program for a CPG firm like Coke isn't about competing with Kroger. It's about reclaiming visibility of customers. Creating even a thin layer of first-party data is valuable so that you are not entirely dependent on someone else's lens into your customer.\n\nLike CPG, privacy regulations are creating walls between the end consumer and the firm. The question isn't \"Is data good or bad?\" The real question is: Who owns it? Who controls it? And what is the value derived for both firms and consumers?\n\nNorthwestern Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n67\n\n# Chrome 2024 restrictions limited customer tracking\n\nAnalysis by Kellogg suggests that this will\n\n* Decrease consumer welfare by 27%\n\n* Decrease small seller revenue by 8.6%\n\n* Decrease platform revenue by 2%\n\nNorthwestern Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n68\n\n# Platforms are considering new algorithms\n\n## Probabilistic customer identity recognition\n\nToday's discussion emphasizes a course theme: loyalty programs are increasingly about the strategic value of data ownership. If you are Wayfair, Hyatt or McDonald's, you already sit close to the transaction.\n\nPersonalization is a growth lever. If you are Stitch Fix, personalization is the business model. These firms invest in a spectrum of personalization capabilities. But if you are Coke — or any CPG brand — you are structurally blind. The retailer owns the basket, the data, and the customer relationship.\n\n<table>\n  <thead>\n    <tr>\n        <th>Device A</th>\n        <th>Device B</th>\n        <th>Same consumer (y)</th>\n        <th>Features of Device A and Device B</th>\n    </tr>\n  </thead>\n  <tbody>\n    <tr>\n        <td>device 1</td>\n        <td>device 2</td>\n        <td>1</td>\n        <td>IP address ... Screen Size ... Clickstream</td>\n    </tr>\n    <tr>\n        <td>device 3</td>\n        <td>device 4</td>\n        <td>0</td>\n        <td>IP address ... Screen Size ... Clickstream</td>\n    </tr>\n    <tr>\n        <td>device 1</td>\n        <td>device 3</td>\n        <td>1</td>\n        <td>IP address ... Screen Size ... Clickstream</td>\n    </tr>\n  </tbody>\n</table>\n\nCustomer records can be linked probabilistically\n\nA digital loyalty program for a CPG firm like Coke isn't about competing with Kroger. It's about reclaiming visibility of customers. Creating even a thin layer of first-party data is valuable so that you are not entirely dependent on someone else's lens into your customer. Like CPG, privacy regulations are creating walls between the end consumer and the firm. The question isn't \"Is data good or bad?\" The real question is: Who owns it? Who controls it? And what is the value derived for both firms and consumers?\n\nNorthwestern Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n69\n\n# Probabilistic identity tracking may mitigate some of these losses\n\nAnalysis by Kellogg suggests that this will\n\n* Decrease consumer welfare by 27% ➔ 12%\n\n* Decrease small seller revenue by 8.6% ➔ 2.3%\n\n* Decrease platform revenue by 2% ➔ 0.7%\n\nToday's discussion emphasizes a course theme: loyalty programs are increasingly about the strategic value of data ownership.\n\nPersonalization is a growth lever. If you are Stitch Fix, personalization is the business model. These firms invest in a spectrum of personalization capabilities.\n\nthe basket, the data, and the customer relationship. A digital loyalty program for a CPG firm like Coke isn't about competing with Kroger. It's\n\nvaluable so that you are not entirely dependent on someone else's lens into your customer.\n\nThe question isn't \"Is data good or bad?\" The real question is: Who owns it? Who controls it? And what is the value derived for both firms and consumers?\n\nNorthwestern Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n70\n\n# The Privacy Wall: The Wayfair case study highlights several privacy issues\n\n* Privacy regulation is evolving and uncertain\n\n* More analyses of the costs and benefits of privacy policies is needed\n\n* Privacy regulation may harm consumers, small suppliers, and Wayfair\n\nNorthwestern Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n71\n\n# The $10 Billion Privacy Shock to Meta after Apple App Tracking Transparency\n\nMeta logo\n\n*Apple App Tracking Transparency (2021) and the Strategic Value of First-Party Data*\n\n## WHAT ATT DID\n\niOS apps must ask permission to track users across other apps and websites\n\n~75% of users opt out\n\nTrackable Apple traffic in U.S. dropped from 73% to 18% — a 55 percentage-point collapse\n\nAd prices for trackable users are 51% higher than untrackable — so losing tracking = losing revenue\n\n**$10B** Meta's estimated revenue loss in 2022\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n72\n\n# Meta losses highlight value of 1<sup>st</sup> party data Meta logo\n\n*Apple App Tracking Transparency (2021) and the Strategic Value of First-Party Data*\n\n## WHAT ATT DID\n\niOS apps must ask permission to track users across other apps and websites\n\n**~75% of users opt out**\n\nTrackable Apple traffic in U.S. dropped from 73% to 18% — a 55 percentage-point collapse\n\nAd prices for trackable users are 51% higher than untrackable — so losing tracking = losing revenue\n\n**$10B** Meta's estimated revenue loss in 2022\n\n## WINNERS: OWNED FIRST-PARTY DATA\n\n**Starbucks, Sephora, Nike**\n\nOwned authenticated customer identities via apps and loyalty programs. Less exposed because signal came from their own systems, not rented tracking.\n\n## LOSERS: RENTED THIRD-PARTY DATA\n\n**Meta, Snap, DTC brands dependent on FB ads**\n\nLost precision in targeting, attribution, and lookalike audiences. Customer acquisition costs rose 20–30%. Incrementality measurement impacted.\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole 73\n\n# Meta losses highlight value of 1<sup>st</sup> party data\n\nMeta logo\n\n*Apple App Tracking Transparency (2021) and the Strategic Value of First-Party Data*\n\n**WHAT ATT DID**\n\niOS apps must ask permission to track users across other apps and websites\n\n**~75% of users opt out**\n\nTrackable Apple traffic in U.S. dropped from 73% to 18% — a 55 percentage-point collapse\n\nAd prices for trackable users are 51% higher than untrackable — so losing tracking = losing revenue\n\n**$10B** Meta's estimated revenue loss in 2022\n\n**WINNERS: OWNED FIRST-PARTY DATA**\n\n**Starbucks, Sephora, Nike**\n\nOwned authenticated customer identities via apps and loyalty programs. Less exposed because signal came from their own systems, not rented tracking.\n\n**LOSERS: RENTED THIRD-PARTY DATA**\n\n**Meta, Snap, DTC brands dependent on FB ads**\n\nLost precision in targeting, attribution, and lookalike audiences. Customer acquisition costs rose 20–30%. Incrementality measurement collapsed.\n\n*Loyalty programs shifted from engagement tools to identity infrastructure*\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n74\n\n# Tesco redesigned loyalty program after GDPR\n\nTESCO Clubcard logo\n\n*Tesco Clubcard, dunnhumby, and GDPR (2018)*\n\n**THE CLUBCARD ECOSYSTEM**\n\n## 23M households\n\n* 80%+ of all UK households (2024)\n\n* Launched 1995 — 30 years of purchase data\n\n* dunnhumby (Tesco subsidiary) processes shopping data to power personalized offers, supplier monetization, and retail media\n\n* Tesco Media & Insight sells CPG brands targeted advertising using Clubcard data — partnerships with ITVX, Pinterest, The Trade Desk\n\n## Clubcard-only pricing\n\n* embedded in Tesco's pricing architecture — data is not optional, it's the business model\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n75\n\n# Tesco redesigned loyalty program after GDPR\n\nTESCO Clubcard logo\n\n*Tesco Clubcard, dunnhumby, and GDPR (2018)*\n\n## THE CLUBCARD ECOSYSTEM\n\n### 23M households\n\n* 80%+ of all UK households (2024)\n\n* Launched 1995 — 30 years of purchase data\n\n* dunnhumby (Tesco subsidiary) processes shopping data to power personalized offers, supplier monetization, and retail media\n\n* Tesco Media & Insight sells CPG brands targeted advertising using Clubcard data — partnerships with ITVX, Pinterest, The Trade Desk\n\n### Clubcard-only pricing\n\n* embedded in Tesco's pricing architecture — data is not optional, it's the business model\n\n## GDPR FORCED REDESIGN (2018)\n\n### What GDPR required:\n\n* Explicit consent for marketing personalization (Art. 6(1)(a))\n\n— no more default opt-in ➔ Day 1: no consent\n\n* Separate legal basis for loyalty operations (contract) vs. marketing (consent) ➔ may join but reject marketing\n\n* Data retention limits — purchase data anonymized after 24 months ➔ CLV?\n\n* Clearer disclosure of dunnhumby and supplier data sharing ➔ Impacted CPG revenue\n\n* Right to erasure and data portability ➔ costly to remove customers from models\n\n### What GDPR did NOT do:\n\n* Did not eliminate personalization — forced structural redesign of governance, consent flows, and data architecture\n\n# Five major changes\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n76\n\n# Redesign Loyalty Under Privacy Constraint\n\nTesco Clubcard logo\n\nTesco Clubcard, dunnhumby, and GDPR (2018)\n\n**THE CLUBCARD ECOSYSTEM**\n\n## 23M households\n\n* 80%+ of all UK households (2024)\n* Launched 1995 — 30 years of purchase data\n* dunnhumby (Tesco subsidiary) processes shopping data to power personalized offers, supplier monetization, and retail media\n* Tesco Media & Insight sells CPG brands targeted advertising using Clubcard data — partnerships with ITVX, Pinterest, The Trade Desk\n\n**GDPR FORCED REDESIGN (2018)**\n\n### What GDPR required:\n\n* Explicit consent for marketing personalization (Art. 6(1)(a)) — no more default opt-in ➔ Day 1: no consent\n\n* Separate legal basis for loyalty operations (contract) vs. marketing (consent) ➔ may join but reject marketing\n* Data retention limits — purchase data anonymized after 24 months ➔ CLV?\n* Clearer disclosure of dunnhumby and supplier data sharing ➔ Impacted CPG revenue\n* Right to erasure and data portability ➔ costly to remove customers from models\n\n> Costly changes to loyalty program, but Tesco emerged stronger\n\n### Clubcard-only pricing\n\n* embedded in Tesco's pricing architecture — data is not optional, it's the business model\n\n### What GDPR did NOT do:\n\n* Did not eliminate personalization — forced structural redesign of governance, consent flows, and data architecture\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n77\n\n# CVS is an integrated health company with a very large loyalty program: Extra Care\n\nCVS logo\n\n*CVS Health: $373 billion in revenue (2024) — far more than a drugstore*\n\n<table>\n  <thead>\n    <tr>\n        <th>PHARMACY &amp; CONSUMER WELLNESS</th>\n        <th>HEALTH SERVICES (CAREMARK PBM)</th>\n        <th>HEALTHCARE BENEFITS (AETNA)</th>\n    </tr>\n  </thead>\n  <tbody>\n    <tr>\n        <td><strong>~$130B revenue</strong></td>\n        <td><strong>~$190B revenue</strong></td>\n        <td><strong>~$106B revenue</strong></td>\n    </tr>\n    <tr>\n        <td>9,000+ retail pharmacies<br/>~28% U.S. retail pharmacy script share<br/>Front-of-store retail<br/>MinuteClinic</td>\n        <td>One of \"Big Three\" PBMs<br/>Negotiates drug prices with manufacturers on behalf of insurers<br/>Specialty pharmacy, mail order<br/>Oak Street Health clinics</td>\n        <td>27M+ members<br/>Acquired 2018 for $69B<br/>Medicare Advantage, Medicaid, ACA, employer plans<br/>Signify Health (in-home evaluations)</td>\n    </tr>\n    <tr>\n        <td><strong>ExtraCare (Loyalty Program)</strong></td>\n        <td><strong>Knows every Rx claim</strong></td>\n        <td><strong>Knows diagnoses &amp; costs</strong></td>\n    </tr>\n  </tbody>\n</table>\n\n> In theory, combining retail loyalty data + prescription claims + insurance records could create the most powerful health personalization engine in the world — medication adherence nudges, preventive care outreach, targeted health interventions, cost reduction. <span style=\"color: #FF4500\">In practice, this integration is structurally constrained by regulation.</span>\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n78\n\n# The Privacy Wall Within CVS limits personalization\n\nCVS logo\n\n*HIPAA and the Structural Firewall Between CVS ExtraCare and CVS Health*\n\n<table>\n  <thead>\n    <tr>\n        <th>ExtraCare</th>\n        <th rowspan=\"3\">HIPAA<br/>FIREWALL</th>\n        <th>Pharmacy / Caremark / Aetna</th>\n    </tr>\n    <tr>\n        <th>(Non-Covered Entity — Retail)</th>\n        <th>(HIPAA Covered Entities)</th>\n    </tr>\n    <tr>\n        <th><strong>What ExtraCare knows:</strong></th>\n        <th><strong>What the health side knows:</strong></th>\n    </tr>\n  </thead>\n  <tbody>\n    <tr>\n        <td>* Front-of-store purchases (toothpaste, snacks, cosmetics)</td>\n        <td rowspan=\"5\">Protected Health Information cannot flow to non-covered entities without explicit patient authorization</td>\n        <td>* Every prescription filled (drug, dosage, refill patterns)</td>\n    </tr>\n    <tr>\n        <td>* Shopping frequency and basket size</td>\n        <td>* Medication adherence gaps</td>\n    </tr>\n    <tr>\n        <td>* Coupon redemption behavior</td>\n        <td>* Diagnoses and clinical encounters (Aetna)</td>\n    </tr>\n    <tr>\n        <td>* Number of prescriptions filled (count only)</td>\n        <td>* Total cost of care, utilization patterns</td>\n    </tr>\n    <tr>\n        <td><em>No drug names, no diagnoses, no clinical data</em></td>\n        <td><em>Cannot use this to personalize retail offers</em></td>\n    </tr>\n  </tbody>\n</table>\n\n**The irony:** CVS may know that a patient stopped taking their statin (Caremark data), that they just bought a blood pressure monitor (ExtraCare data), and that their insurance plan covers a cardiac wellness program (Aetna data). But CVS cannot legally or operationally connect these three facts without explicit authorization — and even with authorization, reputational risk constrains what CVS will do.\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n79\n\n# Three Privacy Regimes: Different Walls\n\nToday's discussion emphasizes a course theme: loyalty programs are increasingly about\n\n<table>\n  <thead>\n    <tr>\n        <th>APPLE ATT</th>\n        <th>GDPR</th>\n        <th>HIPAA</th>\n    </tr>\n  </thead>\n  <tbody>\n    <tr>\n        <td>TYPE<br/>Platform-level privacy policy</td>\n        <td>TYPE<br/>Government regulation (EU)</td>\n        <td>TYPE<br/>Sector-specific regulation (U.S. healthcare)</td>\n    </tr>\n    <tr>\n        <td>MECHANISM<br/>Opt-in required for cross-app tracking</td>\n        <td>MECHANISM<br/>Explicit consent, data minimization, right to erasure, retention limits</td>\n        <td>MECHANISM<br/>Structural firewall between covered and non-covered entities</td>\n    </tr>\n    <tr>\n        <td>WHAT IT CHANGED<br/>Destroyed third-party identity graph. Raised value of owned first-party data.</td>\n        <td>WHAT IT CHANGED<br/>Forced redesign of consent flows, data governance, supplier sharing, and retention practices.</td>\n        <td>WHAT IT CHANGED<br/>Prevents integration of retail, pharmacy, PBM, and insurance data despite common corporate ownership.</td>\n    </tr>\n    <tr>\n        <td>EFFECT ON LOYALTY<br/>Loyalty programs became identity infrastructure — a hedge against platform-level privacy shocks</td>\n        <td>EFFECT ON LOYALTY<br/>Pushed programs to mature — clearer value exchange, stronger governance, more defensible long-term</td>\n        <td>EFFECT ON LOYALTY<br/>Personalization constrained to silos — loyalty is both strategic asset and constrained asset simultaneously</td>\n    </tr>\n  </tbody>\n</table>\n\nit? And what is the value derived for both firms and consumers?\n\n*Privacy will continue to shape the economics and structure of loyalty*\n\nNorthwestern Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n80\n\n# Summary: Personalization and Privacy\n\n* Today’s discussion emphasizes a course theme: loyalty programs are increasingly about the strategic value of data ownership.\n\n* If you are Wayfair, Hyatt or McDonald’s, you already sit close to the transaction. Personalization is a growth lever. If you are Stitch Fix, personalization is the business model. These firms invest in a spectrum of personalization capabilities.\n\n* But if you are Coke — or any CPG brand — you are structurally blind. The retailer owns the basket, the data, and the customer relationship.\n\n* A digital loyalty program for a CPG firm like Coke isn’t about competing with Kroger. It’s about reclaiming visibility of customers. Creating even a thin layer of first-party data is valuable so that you are not entirely dependent on someone else’s lens into your customer.\n\n* Like CPG, privacy regulations are creating walls between the end consumer and the firm. The question isn’t “Is data good or bad?” The real question is: Who owns it? Who controls it? And what is the value derived for both firms and consumers?\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n81\n\n# Next Class\n\n# eMax & DisneY+ Partnership\n\nEMAX logo\n\nDisney+ logo\n\nNorthwestern | Kellogg\n\nCopyright © 2026 Anderson, O’Toole\n\n82",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -480,
+        560
+      ],
+      "id": "056cc139-b1b0-493a-8d21-d073a5fb1bff",
+      "name": "Get PDF"
+    },
+    {
+      "parameters": {
+        "content": "RAG",
+        "height": 712,
+        "width": 2308,
+        "color": 4
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        480
+      ],
+      "id": "c8f1134d-afc4-4862-a39e-60ee56107dff",
+      "name": "Sticky Note5"
+    },
+    {
+      "parameters": {
+        "model": "=openai/text-embedding-3-large",
+        "options": {
+          "dimensions": 1536
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        1040,
+        832
+      ],
+      "id": "d8348796-c11f-4f82-b3be-b1cd5adfea9b",
+      "name": "OpenAI Embeddings",
+      "credentials": {
+        "openAiApi": {
+          "id": "aAmkkyav4AOH10Ib",
+          "name": "n8n free OpenAI API credits"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "6c0a9834-f8d1-41b7-8e5f-71395eebbf4a",
+              "name": "document",
+              "value": "={{ $('Get PDF').item.json.markdown }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        48,
+        560
+      ],
+      "id": "f67bcf88-e07f-4e96-ad99-2b35af399915",
+      "name": "Set Document Input"
+    },
+    {
+      "parameters": {
+        "operation": "toText",
+        "sourceProperty": "text",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        496,
+        560
+      ],
+      "id": "dab75db9-33f7-472c-94c1-2b192a1526b6",
+      "name": "Convert to File"
+    },
+    {
+      "parameters": {
+        "chunkOverlap": 100,
+        "options": {
+          "splitCode": "markdown"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.textSplitterRecursiveCharacterTextSplitter",
+      "typeVersion": 1,
+      "position": [
+        1440,
+        976
+      ],
+      "id": "f572d5df-5124-4ceb-abbf-1ee4895a86d5",
+      "name": "Recursive Character Text Splitter"
+    },
+    {
+      "parameters": {
+        "jsonMode": "expressionData",
+        "jsonData": "=Contextual Overview: {{ $json.text }}\n---\n{{ $('Create Chunks1').item.json.text }}",
+        "textSplittingMode": "custom",
+        "options": {
+          "metadata": {
+            "metadataValues": [
+              {
+                "name": "title",
+                "value": "={{ $('Meta Data Creation').item.json.output.document_title }}"
+              },
+              {
+                "name": "summary",
+                "value": "={{ $('Meta Data Creation').item.json.output.summary }}"
+              },
+              {
+                "name": "author",
+                "value": "={{ $('Meta Data Creation').item.json.output.author }}"
+              },
+              {
+                "name": "type",
+                "value": "={{ $('Meta Data Creation').item.json.output.document_type }}"
+              },
+              {
+                "name": "date",
+                "value": "={{ $('Meta Data Creation').item.json.output.date }}"
+              }
+            ]
+          }
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.documentDefaultDataLoader",
+      "typeVersion": 1.1,
+      "position": [
+        1440,
+        752
+      ],
+      "id": "2bd5a14c-3bb5-4b9c-a617-905f1d0b09c6",
+      "name": "Default Data Loader4"
+    },
+    {
+      "parameters": {
+        "chunkSize": 10000
+      },
+      "type": "@n8n/n8n-nodes-langchain.textSplitterCharacterTextSplitter",
+      "typeVersion": 1,
+      "position": [
+        1600,
+        976
+      ],
+      "id": "c6a84306-6268-41d5-b193-8fc0e4bee713",
+      "name": "Character Text Splitter"
+    },
+    {
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "toolDescription": "Call this tool to search company documents",
+        "tableName": {
+          "__rl": true,
+          "value": "documents",
+          "mode": "list",
+          "cachedResultName": "documents"
+        },
+        "topK": 5,
+        "useReranker": true,
+        "options": {
+          "queryName": "match_documents"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreSupabase",
+      "typeVersion": 1.3,
+      "position": [
+        912,
+        224
+      ],
+      "id": "08d9a616-3b3e-4350-a292-16083d3ea055",
+      "name": "Supabase Vector Store1",
+      "credentials": {
+        "supabaseApi": {
+          "id": "HAgj9wWjxuFI9k21",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "topN": 5
+      },
+      "type": "@n8n/n8n-nodes-langchain.rerankerCohere",
+      "typeVersion": 1,
+      "position": [
+        1120,
+        336
+      ],
+      "id": "0ac6d46a-4dcd-43c9-8d78-9b904b4d2f11",
+      "name": "Reranker Cohere1",
+      "credentials": {
+        "cohereApi": {
+          "id": "Auctj0M70oz7Mdq8",
+          "name": "Cohere account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.document }}",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "=# Role\n\nYou prepare documents for ingestion into a RAG vector database. Your input is markdown that was machine-converted from a PDF. Conversion leaves behind page artifacts and breaks the text in predictable ways. You clean it.\n\n# Prime directive\n\nBe lossless on meaning. Remove noise, never substance. You strip artifacts and repair mechanical damage from the conversion. You never summarize, paraphrase, condense, reorder, or drop any substantive content. If you are unsure whether something is substance or noise, keep it.\n\n# Remove\n\n- Table of contents, list of figures, list of tables, and index sections.\n- Running headers and footers: page numbers, \"Page X of Y\", document titles repeated at the top or bottom of pages, dates, and confidentiality or watermark stamps that recur across pages.\n- Footnote and endnote markers and their reference text.\n- Bibliographies, reference lists, and citation blocks.\n- Boilerplate that repeats on every page (legal disclaimers, letterhead). Remove the repetition. If the same text also appears once as genuine body content, keep that one instance.\n\n# Preserve\n\n- All substantive prose, with its original wording intact.\n- Section headings and the document's heading hierarchy. These help chunking, so keep them.\n- Lists, blockquotes, and code blocks.\n- Tables (see Table handling).\n\n# Repair\n\nThe conversion wraps and splits text by physical page layout, not by meaning. Fix this:\n\n- Rejoin paragraphs that were split across a page break or column break into one continuous paragraph.\n- De-hyphenate words broken across a line break (`effi-\\nciency` becomes `efficiency`). Keep legitimately hyphenated words intact (`broad-based`, `year-over-year`).\n- Remove stray line breaks that exist only because of PDF line wrapping inside a sentence. Keep intentional breaks in lists and headings.\n- Collapse runs of repeated whitespace and blank lines into clean markdown spacing.\n\n# Table handling\n\nKeep every substantive table as a markdown table. Each table must sit directly under its own unique markdown heading so a header-aware chunker captures it as a single retrievable unit with context.\n\n- If the source gives the table a caption or names it in the surrounding text, derive the heading from that.\n- If it does not, write a short descriptive heading from the table's own column and row labels. Describe what the table contains. Do not interpret or editorialize.\n- Make each heading specific enough to be unique within the document. Include a distinguishing detail (subject, year, identifier) when tables are similar.\n- Choose a heading level that nests sensibly under the current section.\n- If a table converted into unreadable or fragmented rows that cannot be reconstructed into valid markdown, drop it.\n\nThis heading is the only text you are permitted to add. Everything else is the source's own words.\n\n# Output contract\n\n- Output only the cleaned markdown body. Nothing else.\n- No preamble, no explanation, no commentary, no notes about what you removed or changed.\n- Do not wrap the entire output in a code fence.\n- Do the cleaning judgment internally. Never show your reasoning.\n- Do not translate or change the language of the content.\n- If the input contains no substantive content after cleaning, return nothing.\n\n# Examples\n\nInput:\nRevenue increased 12% year-over-year, reflecting broad-based\nstrength across all regions. Operating margin expanded as the\ncompany realized cost effi-\n\nAnnual Report 2024          17\n\nciencies from the restructuring completed last year.\n\nOutput:\nRevenue increased 12% year-over-year, reflecting broad-based strength across all regions. Operating margin expanded as the company realized cost efficiencies from the restructuring completed last year.\n\n---\n\nInput:\nThe following breakdown shows revenue by segment.\n\n| Segment | 2023 | 2024 |\n|---|---|---|\n| Consumer | 1,200 | 1,344 |\n| Enterprise | 890 | 1,010 |\n\nOutput:\n## Segment Revenue by Year\n\n| Segment | 2023 | 2024 |\n|---|---|---|\n| Consumer | 1,200 | 1,344 |\n| Enterprise | 890 | 1,010 |"
+            }
+          ]
+        },
+        "batching": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.9,
+      "position": [
+        208,
+        560
+      ],
+      "id": "97cbf392-a90b-43de-a906-0418f32fcb15",
+      "name": "Data Cleansing"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.unstructuredapp.io/general/v0/general",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "accept",
+              "value": "application/json"
+            },
+            {
+              "name": "unstructured-api-key",
+              "value": "Xuq5YPHJZi7zMDk6lpRSDXQ5yX5lGG"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "chunking_strategy",
+              "value": "by_title"
+            },
+            {
+              "name": "max_characters",
+              "value": "6000"
+            },
+            {
+              "name": "new_after_n_chars",
+              "value": "5000"
+            },
+            {
+              "name": "combine_under_n_chars",
+              "value": "300"
+            },
+            {
+              "name": "multipage_sections",
+              "value": "true"
+            },
+            {
+              "parameterType": "formBinaryData",
+              "name": "files",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        656,
+        560
+      ],
+      "id": "c7af6a76-e58b-450e-81e4-275cd28d06b3",
+      "name": "Create Chunks1"
+    },
+    {
+      "parameters": {
+        "mode": "insert",
+        "tableName": {
+          "__rl": true,
+          "value": "documents",
+          "mode": "list",
+          "cachedResultName": "documents"
+        },
+        "options": {
+          "queryName": "match_documents"
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreSupabase",
+      "typeVersion": 1.3,
+      "position": [
+        1088,
+        560
+      ],
+      "id": "a195f4a5-b828-4c6c-a649-79ee28987859",
+      "name": "Insert into Vector DB",
+      "credentials": {
+        "supabaseApi": {
+          "id": "HAgj9wWjxuFI9k21",
+          "name": "Supabase account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Here is the chunk we want to situate within the whole document: \n<chunk> \n{{ $json.text }}\n</chunk> ",
+        "messages": {
+          "messageValues": [
+            {
+              "message": "=<role>You are an expert Contextualization Specialist for document retrieval systems.</role>\n<objective>Your task is to generate a short, succinct, and highly relevant contextual phrase or sentence for a given document chunk. This context will be used to improve the search retrieval accuracy of the chunk within a larger document.</objective>\n<constraints>\n  <constraint>The output must be *only* the contextual phrase/sentence.</constraint>\n  <constraint>Do not include any conversational filler, greetings, or introductory/concluding remarks.</constraint>\n  <constraint>The context should be concise, ideally a single sentence or a short phrase.</constraint>\n  <constraint>Focus on the core topic or purpose of the chunk relative to the overall document.</constraint>\n</constraints>\n<output_format>Plain text, containing only the contextual phrase/sentence.</output_format>\n\n<thinking>\n  <step>Analyze the provided document chunk to identify its main subject, purpose, or key information.</step>\n  <step>Consider how this chunk relates to a hypothetical larger document. What information would a user need to know to understand where this chunk fits?</step>\n  <step>Formulate a concise phrase or sentence that encapsulates this relationship or core subject.</step>\n  <step>Review the formulated context against the constraints: Is it short? Is it only the context? Is it relevant for search retrieval?</step>\n</thinking>\n\n<examples>\n  <example>\n    <document_chunk>\n      <text>\n        The `append()` method adds an item to the end of the list. For example, `my_list.append(4)` would add the number 4 to `my_list`.\n      </text>\n    </document_chunk>\n    <desired_context>Python list method: `append()` functionality and usage.</desired_context>\n  </example>\n  <example>\n    <document_chunk>\n      <text>\n        This section details the iterative design process, emphasizing user feedback loops and agile methodologies.\n      </text>\n    </document_chunk>\n    <desired_context>Overview of iterative design process and agile methodologies.</desired_context>\n  </example>\n  <example>\n    <document_chunk>\n      <text>\n        The final phase involves deploying the trained model to a production environment, ensuring scalability and monitoring performance metrics.\n      </text>\n    </document_chunk>\n    <desired_context>Machine learning model deployment and performance monitoring.</desired_context>\n  </example>\n</examples>\n\n<document_chunk>\n  <text>\n{{ $('Data Cleansing').item.json.text }}\n</text>\n</document_chunk>"
+            }
+          ]
+        }
+      },
+      "id": "89676a60-eb99-4ad4-aba8-2a317c96e09d",
+      "name": "Generate Contextual Text1",
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.4,
+      "position": [
+        800,
+        560
+      ],
+      "executeOnce": false
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=<document>{{ $json.markdown }}</document>",
+        "hasOutputParser": true,
+        "messages": {
+          "messageValues": [
+            {
+              "message": "=You are a document analysis expert. Your task is to analyze the content of a document, determine its type, and extract key metadata. You will be provided with the document's text.\n\n**Instructions:**\n\n1.  **Analyze the Text:** Carefully read the provided document text. Pay attention to:\n    -   **Title and Headings:** These often provide clues about the document type, author, and topic.\n    -   **Structure and Formatting:** The layout, presence of sections, use of bullet points, tables, etc., can indicate the document type and help identify key information.\n    -   **Language and Tone:** Formal language, technical jargon, or conversational style can be indicative.\n    -   **Key Phrases and Terminology:** Certain words or phrases are commonly associated with specific document types or topics.\n    -   **Explicit Metadata Mentions:** Look for explicit mentions of author, date, department, etc. (e.g., \"Author: John Doe,\" \"Date: 2023-10-27,\" \"Department: Marketing\").\n\n2.  **Determine the Document Type:** Based on your analysis, select the *most appropriate* document type from the list of allowed categories below. If the document doesn't fit perfectly into any category, choose the *closest* one.\n\n3.  **Extract Metadata:** Extract the following metadata fields from the document:\n\n    *   **Document Type:** (Required - Use the allowed types list below)\n    *   **Document Title: (If available) The title of the document if known. Otherwise output \"unknown\"\n    *   **Author:** (If available) The author(s) of the document. If multiple authors, separate them with commas. If a company is the owner of the document, you can cite the company if no individual author is known. If no author is found, output \"Unknown\".\n    *   **Date:** (If available) The date the document was created or last modified. Use the format YYYY-MM-DD if possible. If a specific date is not found, try to extract the year. If no date information is found, output \"Unknown\".\n    *   **Keywords:** (Required) Provide a list of 5-10 keywords that best describe the document's content. Separate keywords with commas.\n    *   **Summary:** (Required) Provide a brief (1-3 sentence) summary of the document's main points.\n\n4.  **Output:** Output a JSON object with the following keys and values:\n\n    ```json\n    {\n      \"document_title\" \"[Document Title]\",\n      \"document_type\": \"[Document Type]\",\n      \"author\": \"[Author Name(s) or Company Name or 'Unknown']\",\n      \"date\": \"[Date in YYYY-MM-DD format, Year only, or 'Unknown']\",\n      \"keywords\": \"[keyword1, keyword2, keyword3, ...]\",\n      \"summary\": \"[Brief summary of the document]\"\n    }\n    ```\n\n**Allowed Document Types:**\n\n*   Memo (Memorandum)\n*   Email\n*   Letter\n*   Report\n*   Meeting Minutes\n*   Agenda\n*   Proposal\n*   Presentation\n*   Business Plan\n*   Executive Summary\n*   Project Plan\n*   Status Report\n*   White Paper\n*   Case Study\n*   Newsletter\n*   Press Release\n*   Announcement\n*   Survey\n*   Questionnaire\n*   Form\n*   Checklist\n*   Inventory List\n*   Database Record\n*   Invoice\n*   Receipt\n*   Purchase Order\n*   Financial Statement (Balance Sheet, Income Statement, Cash Flow Statement)\n*   Budget\n*   Expense Report\n*   Tax Form\n*   Audit Report\n*   Investment Report\n*   Quote\n*   Contract\n*   Agreement\n*   Non-Disclosure Agreement (NDA)\n*   Terms of Service (TOS)\n*   Privacy Policy\n*   Legal Brief\n*   Patent Application\n*   Trademark Application\n*   Court Document\n*   Will\n*   Power of Attorney\n*   Job Description\n*   Resume/CV\n*   Cover Letter\n*   Employee Handbook\n*   Policy (e.g., HR Policy, Dress Code Policy, Vacation Policy)\n*   Procedure (e.g., Onboarding Procedure)\n*   Performance Review\n*   Training Manual\n*   Employee Survey\n*   Technical Documentation\n*   User Manual\n*   Installation Guide\n*   Troubleshooting Guide\n*   Specification Sheet\n*   Datasheet\n*   Schematic\n*   Blueprint\n*   CAD Drawing\n*   Test Report\n*   Research Paper\n*   API Documentation\n*   Marketing Plan\n*   Marketing Material (Brochure, Flyer, Advertisement)\n*   Sales Presentation\n*   Product Catalog\n*   Price List\n*   Customer List\n*   Lead List\n*   Market Research Report\n*   Essay\n*   Research Paper\n*   Thesis\n*   Dissertation\n*   Lecture Notes\n*   Syllabus\n*   Transcript\n*   Script\n*   Storyboard\n*   Design Document\n*   Web Page\n*   Blog Post\n*   Article\n*   Social Media Post\n*   Other (Use only if none of the above apply)\n\n**Example:**\n\n**Input Document Text:**\n\n```text\nMEMORANDUM\n\nTO: All Staff\nFROM: John Smith, CEO\nDATE: October 26, 2023\nSUBJECT: New Work-From-Home Policy\n\nThis memo outlines the company's new policy regarding remote work.  Employees will be allowed to work remotely up to three days per week, subject to manager approval.  Further details are available on the HR intranet.\n```\n\n**Example Output:**\n\nJSON\n\n{\n  \"document_title\": \"Unknown\",\n  \"document_type\": \"Memo\",\n  \"author\": \"John Smith, CEO\",\n  \"date\": \"2023-10-26\",\n  \"keywords\": \"memo, remote work, work-from-home, policy, HR, employees\",\n  \"summary\": \"This memo from CEO John Smith announces a new company policy allowing employees to work remotely up to three days per week with manager approval. More details are available on the HR intranet.\"\n}"
+            }
+          ]
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.chainLlm",
+      "typeVersion": 1.5,
+      "position": [
+        -272,
+        560
+      ],
+      "id": "3781dee8-d5b9-4bec-91b4-dcef27bd1ae3",
+      "name": "Meta Data Creation"
+    },
+    {
+      "parameters": {
+        "jsonSchemaExample": "{\n      \"document_title\": \"Consulting Agreement with John Renaldi\",\n      \"document_type\": \"Agreement\",\n      \"author\": \"John Renaldi\",\n      \"date\": \"2025-03-15\",\n      \"keywords\": [\"keyword1, keyword2, keyword3\"],\n      \"summary\": \"Brief summary of the document\"\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.2,
+      "position": [
+        64,
+        912
+      ],
+      "id": "3234e81b-ab08-478b-8270-7f7765a10ece",
+      "name": "Structured Output Parser2"
+    },
+    {
+      "parameters": {
+        "model": "google/gemini-3.1-flash-lite",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenRouter",
+      "typeVersion": 1,
+      "position": [
+        -288,
+        912
+      ],
+      "id": "ba45baac-5520-4df6-af1d-d57fbfe4e9cc",
+      "name": "OpenRouter Chat Model1",
+      "credentials": {
+        "openRouterApi": {
+          "id": "9V9hxCMPE7E5XGe9",
+          "name": "OpenRouter account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "Research Agent\n",
+        "height": 616,
+        "width": 2308,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -560,
+        -160
+      ],
+      "id": "02f1bb86-347d-4557-98fe-85387cdc444a",
+      "name": "Sticky Note"
+    }
+  ],
+  "pinData": {
+    "Data Cleansing": [
+      {
+        "json": {
+          "text": "# Loyalty Management Framework\n\nToday's discussion emphasizes a course theme: loyalty programs are increasingly about the strategic value of data ownership. If you are Wayfair, Hyatt or McDonald's, you already sit close to the transaction. These firms invest in a spectrum of personalization capabilities so that you are not entirely dependent on someone else's lens into your customer.\n\n## Loyalty Program and Business Case\n\n*   **Foundation** → **Value Creation**\n*   **Value Creation** → **Design**\n*   **Design** → **Strategic, Enterprise Issues**\n\n**Strategic, Enterprise Issues**\n*   **Personalization** --- **Monetization**\n*   **Accounting** --- **Partnerships**\n*   **M&A** --- **Ecosystems**\n*   **Org. Transformation**\n\n> Personalization and privacy\n> Like CPG, privacy regulations are creating walls between the end consumer and the firm. The question isn't \"Is data good or bad?\" The real question is: Who owns it? Who controls it? And what is the value derived for both firms and consumers?\n\n# Our two readings for today address the strategy and infrastructure of personalization\n\n## THE STRATEGY QUESTION\n\n**Where in the lifecycle?**\nBefore purchase → during → after purchase\nDepth of individualization increases as the relationship deepens\n\n**How deep can you go?**\nSegmentation (broadest); Discrete interactions; Pre-set personas / journeys; Contextual anticipation (deepest)\n\n**Four strategic questions**\nWhat's the consumer need? What's the business objective? What's the tactic? Who needs to be involved?\n\n*Forrester, \"A Strategy Guide to Consumer Personalization\" (2022)*\n\n## THE INFRASTRUCTURE QUESTION\n\n**The hard part isn't the algorithm**\n\"Personalization is the goal. The technology is merely the tool for reaching it.\"\n\n**Four requirements to deliver**\n1. Goal clarity — optimize for narrow and measurable\n2. Data instrumentation — capture every interaction at granular level, tag everything\n3. Modular tech architecture — loosely connected systems, APIs, not one monolith\n4. Experimental culture — test, learn, iterate\n\n**Key examples:** Starbucks (goal clarity), Aetna (data instrumentation at micro-level)\n\n*HBR, \"What Smart Companies Know About Integrating AI\" (2024)*\n\n# Learning objectives\n\n* **Personalization capability**\n* Personalization in CPG\n* Impact of privacy regulations on loyalty programs\n\n# A spectrum of personalization capabilities\n\n## Personalization Spectrum Matrix\n\n| Point Solutions | Predictive Systems | Incremental Systems | Enterprise Systems |\n|---|---|---|---|\n| Scope: limited | Scope: limited | Scope: limited | Scope: broad |\n| Experimentation: limited | Experimentation: limited | Experimentation: robust | Experimentation: robust |\n| Automation: limited | Automation: robust | Automation: robust | Automation: robust |\n\n**Mass Personalization** (Segment-based)\n**Individual Personalization** (1:1)\n**Predictive Personalization** (Anticipatory)\n**Hyper-Personalization** (Real-time & Contextual)\n\n# Personalization can be anywhere in the MarTech stack\n\n*Ease of implementation and quality of customer experience vary*\n\n**Channel Specific Personalization**\n* Example: email, text offers\n\n**Data Platform Integration**\n* Example: sharing Wayfair and Perigold customer data across web sites\n\n**Dedicated Personalization Engine**\n* Real time, ML models, content customization\n\n# Path to personalization at McDonald’s illustrates the technical challenges\n\n* McDonald’s bought Dynamic Yield in 2019 for roughly $300 million dollars to help modernize and personalize its drive-thru experience, outdoor menus and digital ordering kiosks.\n* In the AI/ML space Aspectiva (Walmart) and Zodiac, Invertex (Nike) were three notable acquisitions.\n* In April 2022, McDonald’s sold the company to Mastercard for $270 million\n\n# Ongoing strategic challenge for McD\n\n* 40% of restaurants still use the Dynamic Yield recommendation software, post-sale (e.g., drive thru menus)\n* The software is not proprietary\n* Dynamic yield is now courting other QSR clients\n\n# Personalization efforts today\n\n* Google: McD announces strategic partnership with Google to advance AI/ML initiatives\n* Personalization is a central component of the partnership\n* Personalization capability is critical to McDonald’s loyalty strategy\n\n# Personalization is not software…it is capability\n\nIt requires:\n* Architecture\n* Data and tech integration\n* Data governance\n* Execution\n* Operational integration\n\n# Personalization for CPG products\n\n*   +one Powered by The Coca-Cola Company\n*   Collage of Kellogg's and Pringles products with a \"Take a Quiz\" digital interface\n*   M&M'S Fun Club: join the M&M'S Fun Club earn points & get sweet rewards signup for free!\n\n# Coca-Cola's Loyalty Journey\n\n## PRE-2006: NO LOYALTY\n*   **The business:** $46B revenue, 1.9B servings/day, 200+ countries, 500+ brands\n*   **Marketing:** Mass TV, print, outdoor; \"Open Happiness,\" polar bears; Trade promotions to retailers (~50-60% of marketing budget)\n*   **Customer data:** None. Zero. Coke knows how many cases ship to Kroger. Doesn't know who drinks them, how often, or what else they buy.\n\n## 2006–2017: MY COKE REWARDS\n*   **The mechanism:** Enter alphanumeric code from under bottle cap on a website; Points redeemed for prizes\n*   **Scale:** 23M registered, ~3.2M active (~1% of daily servings)\n*   **Why it failed:** Clunky manual code entry; Transactional — contradicted a brand built on emotional connection; Rewards unrelated to brand (Blockbuster cards, GPS devices); Point devaluation bred frustration; Shut down June 2017; sued by members who lost points\n\n## 2018–NOW: DIGITAL / +ONE APP\n*   **The mechanism:** Mobile app: scan codes with camera, location-based perks, gamification, brand content\n*   **Scale:** \"Connected packs\" in 40+ markets; 200+ active programs (2024)\n*   **What changed:** Experience-based, not transactional; Custom avatars, tiered status, cause support, brand experiences; First-party data collection at scale\n*   **Japan: The exception:** Coke On: 50M downloads, 1M+ transactions/day — works because Coke owns the vending machines (no retailer wall)\n\n> **The scale problem:** Coke serves 1.9 billion servings per day. Even 23M members at peak was ~1% of daily volume. At that penetration, the data can't change product decisions or meaningfully shift marketing allocation. The retailer wall remains.\n\n# The Traditional CPG Model: Walls limit data flows\n\n*The brand that makes the product doesn't know who buys it*\n\n*   **CPG BRAND (Manufactures/sources product, Sets brand strategy, Designs packaging, Sets wholesale price)**\n    *   *Arrow: THE WALL*\n*   **RETAILER (Owns shelf, price, checkout, Owns transaction data, Owns customer relationship, Controls the purchase moment)**\n    *   *Arrow: THE WALL*\n*   **CONSUMER (Buys at store/online, Brand has no visibility into who, when, how often, or what else they buy)**\n\n# Implications for Coke\n\n*   **Can't identify heavy buyers:** The 20% driving 80% of volume are invisible. Can't distinguish loyal customers from deal-switchers.\n*   **Marketing is mass, not targeted:** Every dollar reaches everyone — your customers, competitors' customers, and non-category buyers.\n*   **Trade promotions dominate spend:** ~50-60% of marketing budget goes to paying the retailer for shelf space, end caps, price reductions.\n*   **Can't measure individual-level ROI:** Did the ad cause the purchase? Was she buying Coke anyway? Attribution is nearly impossible.\n\n# Coke Digital Loyalty: A Different Kind of Value\n\n+one does not eliminate the retailer wall. It mitigates information disadvantage.\n\n*   **① Targeted digital advertising:** 3M profiled members → lookalike audiences for 300M ad impressions. Reduces waste in $4B ad spend.\n*   **② Product intelligence panel:** A representative sample, not a census. Nielsen built a $6B business from 40K households. Coke has millions.\n*   **③ Counterweight to retailer power:** Kroger, Walmart, Target are building their own data. If retailer knows your customer better than you — you at a huge disadvantage.\n*   **④ Direct communication channel:** Push notifications bypass the retailer for communication — even though you can't bypass them for distribution.\n\n# Kellogg's Family Rewards: A Cautionary Tale\n\n*Launched 2012 · Peak: 33 million members · Shut down 2022*\n\n*   **What Worked (Initially):** Codes inside packages → points; Receipt scanning (later iteration); 33M registered participants at peak; Multi-brand portfolio coverage\n*   **Engagement Eroded:** Codes notoriously hard to read; Social pages dormant 3+ years; Jan 2022 relaunch: 5 tokens/month minimum to redeem; Rewards: Cheez-It socks, $5 gift cards\n*   **The Final Blow:** Kellogg's split into 3 companies; Frosted Flakes, Eggo, MorningStar → separate owners; No company claimed the program; Corporate disruption orphaned the platform\n\n# M&M's Fun Club: The Next-Generation Attempt\n\n*Launched February 2025 · Powered by Fetch · Brand-specific design*\n\n*   **1. Brand-specific, not portfolio-wide:** M&M's has experiential assets (Times Square store) Kellogg's lacked. A split portfolio can't kill a single-brand program.\n*   **2. Outsource the platform entirely:** Mars partners with Fetch rather than building its own app — tapping 17M monthly active users already submitting 8.5M receipts/day.\n\n# Fetch vs Instacart in CPG Loyalty\n\n| Feature | Fetch | Instacart |\n|---|---|---|\n| Monthly Active Users | 17M | N/A |\n| Receipts Scanned | 8.5M daily | N/A |\n| Retailers | 1,800+ banners | 1,800+ banners |\n| Revenue | N/A | $1.18B (2024) |\n| Mechanism | Consumers scan any receipt | Delivers groceries; inside the transaction |\n| Brand Advantage | First-party purchase data; closed-loop measurement | Sponsored search; real-time SKU-level data |\n\n# Wayfair's Large-scale field experiment\n\n*   9 million consumers over 24 months\n*   **Treatment:** Personalized Rankings\n*   **Control:** Non-Personalized (Bestseller) Rankings\n\n**Outcomes for Personalized Group:**\n*   **Scrolling:** ↓ -83 products\n*   **Filtering:** ↓ -1.9%\n*   **Time to Purchase:** ↓ -2 days\n*   **Purchase:** ↑ +1.4%\n*   **Price Paid:** ↑ +0.5%\n*   **Product Return:** ↓ -10%\n*   **Repeat Purchase:** ↑ +2.3%\n\n# The $10 Billion Privacy Shock to Meta\n*Apple App Tracking Transparency (2021)*\n\n*   **What ATT did:** iOS apps must ask permission to track users; ~75% opt out. Trackable Apple traffic dropped from 73% to 18%.\n*   **Winning strategy:** Owned first-party data (Starbucks, Sephora, Nike) used authenticated identities.\n*   **Losing strategy:** Rented third-party data (Meta, Snap, DTC brands); Lost precision in targeting, attribution, and lookalike audiences; CAC rose 20-30%.\n\n# Tesco Clubcard and GDPR (2018)\n\n*   **23M households:** 80%+ of UK households; 30 years of data.\n*   **GDPR constraints:** Explicit consent required; separate basis for operations vs. marketing; 24-month retention limits on purchase data; clear disclosure of dunnhumby/supplier sharing.\n*   **Outcome:** Redesign forced changes to governance, consent flows, and data architecture. Tesco emerged stronger.\n\n# CVS and HIPAA Firewall\n\n*   **ExtraCare (Retail):** Knows front-of-store purchases, shopping frequency.\n*   **Pharmacy/Caremark/Aetna (Health):** Knows Rx claims, diagnoses, clinical records.\n*   **Constraint:** HIPAA Protected Health Information cannot flow to non-covered entities (ExtraCare) without explicit patient authorization. \n*   **Result:** Personalization constrained to silos despite common corporate ownership.\n\n# Three Privacy Regimes Summary\n\n| Regime | Mechanism | Effect on Loyalty |\n|---|---|---|\n| **Apple ATT** | Opt-in for cross-app tracking | Programs became identity infrastructure hedge. |\n| **GDPR** | Consent, minimization, erasure | Programs matured with stronger governance/consent. |\n| **HIPAA** | Firewalls between entities | Personalization constrained to operational silos. |"
+        }
+      }
+    ],
+    "Meta Data Creation": [
+      {
+        "json": {
+          "output": {
+            "document_title": "Personalization Meets Privacy (Class 15)",
+            "document_type": "Presentation",
+            "author": "Tom O’Toole, Northwestern Kellogg",
+            "date": "2026",
+            "keywords": [
+              "personalization",
+              "privacy",
+              "loyalty programs",
+              "first-party data",
+              "CPG",
+              "customer relationship",
+              "data ownership"
+            ],
+            "summary": "This presentation explores the strategic intersection of personalization and privacy in loyalty programs, arguing that data ownership is a critical competitive necessity. It uses case studies from Coca-Cola, Wayfair, and CVS to demonstrate how companies navigate structural barriers and privacy regulations like GDPR, HIPAA, and Apple's ATT to leverage customer data."
+          }
+        }
+      }
+    ]
+  },
+  "connections": {
+    "Search in Tavily": {
+      "ai_tool": [
+        [
+          {
+            "node": "research agent1",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "research agent1",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "update todos": {
+      "ai_tool": [
+        [
+          {
+            "node": "research agent1",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "/scrape in Firecrawl1": {
+      "ai_tool": [
+        [
+          {
+            "node": "research agent1",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "write report file": {
+      "ai_tool": [
+        [
+          {
+            "node": "research agent1",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When Executed by Another Workflow": {
+      "main": [
+        [
+          {
+            "node": "research agent1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get PDF": {
+      "main": [
+        [
+          {
+            "node": "Meta Data Creation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Embeddings": {
+      "ai_embedding": [
+        [
+          {
+            "node": "Supabase Vector Store1",
+            "type": "ai_embedding",
+            "index": 0
+          },
+          {
+            "node": "Insert into Vector DB",
+            "type": "ai_embedding",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Document Input": {
+      "main": [
+        [
+          {
+            "node": "Data Cleansing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert to File": {
+      "main": [
+        [
+          {
+            "node": "Create Chunks1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Default Data Loader4": {
+      "ai_document": [
+        [
+          {
+            "node": "Insert into Vector DB",
+            "type": "ai_document",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Character Text Splitter": {
+      "ai_textSplitter": [
+        [
+          {
+            "node": "Default Data Loader4",
+            "type": "ai_textSplitter",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reranker Cohere1": {
+      "ai_reranker": [
+        [
+          {
+            "node": "Supabase Vector Store1",
+            "type": "ai_reranker",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Data Cleansing": {
+      "main": [
+        [
+          {
+            "node": "Convert to File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Chunks1": {
+      "main": [
+        [
+          {
+            "node": "Generate Contextual Text1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Contextual Text1": {
+      "main": [
+        [
+          {
+            "node": "Insert into Vector DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Meta Data Creation": {
+      "main": [
+        [
+          {
+            "node": "Set Document Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser2": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Meta Data Creation",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenRouter Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Data Cleansing",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Generate Contextual Text1",
+            "type": "ai_languageModel",
+            "index": 0
+          },
+          {
+            "node": "Meta Data Creation",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Supabase Vector Store1": {
+      "ai_tool": [
+        [
+          {
+            "node": "research agent1",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate"
+  },
+  "versionId": "436f6e46-3d4f-464c-8736-5bcd45b190af",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "50fac43fa02e345facc1033be7ad53a464ba4fce036236eefb40f13e211a0f29"
+  },
+  "nodeGroups": [],
+  "id": "FxV6Lgq7cVjpNcIP",
+  "tags": []
+}
