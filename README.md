@@ -20,7 +20,11 @@ This agent solves that. It takes a research question, clarifies scope through a 
 
 The marketer interacts with the agent through a **Next.js chatbot UI**, built with Claude Code. It provides a clean conversational interface for submitting research questions, reviewing the research plan, and tracking task progress in real time.
 
+![Chatbot UI](docs/screenshots/chatbot.png)
+
 The web builder agent also outputs a **Next.js presentation page** as a separate deliverable - a structured, leadership-ready view of the research findings generated dynamically per research run.
+
+![Generated research report page](docs/screenshots/website-report.png)
 
 ### Backend
 
@@ -45,9 +49,13 @@ Main Orchestrator Agent
 
 **Main Orchestrator** - manages the overall workflow, delegates tasks to subagents, and maintains task state in Google Sheets so the agent can resume if interrupted.
 
+![Main orchestrator n8n workflow](docs/screenshots/internal-doc-search-agent.png)
+
 **Planning Agent** - clarifies the research question before any retrieval begins. Asks targeted questions, suggests specific research areas, and iterates with the user until the plan is confirmed.
 
 **DocRetrieval + Research Agent** - the core of the system. Searches internal documents via a RAG pipeline (LlamaParse, Supabase, Cohere) and the web (Tavily, Firecrawl), then writes a structured report to Google Docs.
+
+![DocRetrieval + Research Agent n8n workflow](docs/screenshots/docretriever-agent.png)
 
 **Web Builder Agent** - takes the finished report and generates a presentation-ready Next.js page using Daytona as the sandbox, giving marketers a polished leadership-ready deliverable.
 
