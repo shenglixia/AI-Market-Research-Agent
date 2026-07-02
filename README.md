@@ -2,7 +2,7 @@
 
 An agentic workflow built with n8n that helps junior marketers go from a research question to a fully written market landscape report in minutes - not days.
 
-> **Demo:** [Watch 8-min walkthrough](#) | **Stack:** n8n, LlamaParse, Supabase, Cohere, Tavily, Firecrawl, Daytona, Google Docs
+> **Demo:** [Watch walkthrough](https://drive.google.com/file/d/14oq-BZ20GqcYXKN74eOEZYJQN0YEhpGZ/view?usp=sharing) | **Stack:** n8n, LlamaParse, Supabase, Cohere, Tavily, Firecrawl, Daytona, Google Docs
 
 ---
 
