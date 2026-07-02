@@ -1,5 +1,5 @@
 {
-  "name": "Internal Doc Search Agent",
+  "name": "AI Market Research Agent",
   "nodes": [
     {
       "parameters": {
@@ -899,13 +899,13 @@
       "parameters": {
         "content": "Main Agent",
         "height": 472,
-        "width": 708,
+        "width": 1316,
         "color": 4
       },
       "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
       "position": [
-        -1728,
+        -2336,
         448
       ],
       "id": "e88f6984-211a-43ea-85ea-5b247f872581",
@@ -1315,7 +1315,7 @@
     "binaryMode": "separate",
     "availableInMCP": false
   },
-  "versionId": "d1504a4c-4cd2-4c0c-8279-e1d5af1ad8be",
+  "versionId": "a1cb22d0-3381-4476-a2ff-9170ee392583",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "50fac43fa02e345facc1033be7ad53a464ba4fce036236eefb40f13e211a0f29"

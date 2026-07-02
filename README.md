@@ -49,7 +49,7 @@ Main Orchestrator Agent
 
 **Main Orchestrator** - manages the overall workflow, delegates tasks to subagents, and maintains task state in Google Sheets so the agent can resume if interrupted.
 
-![Main orchestrator n8n workflow](docs/screenshots/internal-doc-search-agent.png)
+![Main orchestrator n8n workflow](docs/screenshots/ai-market-research-agent.png)
 
 **Planning Agent** - clarifies the research question before any retrieval begins. Asks targeted questions, suggests specific research areas, and iterates with the user until the plan is confirmed.
 
