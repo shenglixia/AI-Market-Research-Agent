@@ -22,6 +22,8 @@ The marketer interacts with the agent through a **Next.js chatbot UI**, built wi
 
 ![Chatbot UI](docs/screenshots/chatbot.png)
 
+![Chatbot reviewing a research plan](docs/screenshots/chatbot-detail.png)
+
 The web builder agent also outputs a **Next.js presentation page** as a separate deliverable - a structured, leadership-ready view of the research findings generated dynamically per research run.
 
 ![Generated research report page](docs/screenshots/website-report.png)
